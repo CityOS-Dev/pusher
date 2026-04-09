@@ -7,5 +7,7 @@ module.exports = {
   },
   db: {
     path: './data/pusher.db'
-  }
+  },
+  apps: require('./apps.config'),
+  queue: require('./queue.config')
 };
