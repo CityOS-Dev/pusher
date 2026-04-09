@@ -1,5 +1,5 @@
 // src/api/schema.js
-const apps = require('../../config/apps.config');
+const apps = require('../../config/apps.config.js');
 
 const appIds = apps.apps.map(app => app.id);
 
