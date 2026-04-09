@@ -18,41 +18,53 @@ function logError(appId, errorType, message) {
 }
 
 function getErrors(appId = null, limit = 100, offset = 0) {
-  let stmt;
-  const params = [];
+  try {
+    let stmt;
+    const params = [];
 
-  if (appId) {
-    stmt = db.prepare(`
-      SELECT * FROM error_log
-      WHERE app_id = ?
-      ORDER BY timestamp DESC
-      LIMIT ? OFFSET ?
-    `);
-    params.push(appId, limit, offset);
-  } else {
-    stmt = db.prepare(`
-      SELECT * FROM error_log
-      ORDER BY timestamp DESC
-      LIMIT ? OFFSET ?
-    `);
-    params.push(limit, offset);
+    if (appId) {
+      stmt = db.prepare(`
+        SELECT id, timestamp, app_id, error_type, message
+        FROM error_log
+        WHERE app_id = ?
+        ORDER BY timestamp DESC
+        LIMIT ? OFFSET ?
+      `);
+      params.push(appId, limit, offset);
+    } else {
+      stmt = db.prepare(`
+        SELECT id, timestamp, app_id, error_type, message
+        FROM error_log
+        ORDER BY timestamp DESC
+        LIMIT ? OFFSET ?
+      `);
+      params.push(limit, offset);
+    }
+
+    return stmt.all(...params);
+  } catch (error) {
+    logger.error({ error }, 'Failed to get errors');
+    throw error;
   }
-
-  return stmt.all(...params);
 }
 
 function getErrorCount(appId = null) {
-  let stmt;
-  const params = [];
+  try {
+    let stmt;
+    const params = [];
 
-  if (appId) {
-    stmt = db.prepare('SELECT COUNT(*) as count FROM error_log WHERE app_id = ?');
-    params.push(appId);
-  } else {
-    stmt = db.prepare('SELECT COUNT(*) as count FROM error_log');
+    if (appId) {
+      stmt = db.prepare('SELECT COUNT(*) as count FROM error_log WHERE app_id = ?');
+      params.push(appId);
+    } else {
+      stmt = db.prepare('SELECT COUNT(*) as count FROM error_log');
+    }
+
+    return stmt.get(...params).count;
+  } catch (error) {
+    logger.error({ error }, 'Failed to get error count');
+    throw error;
   }
-
-  return stmt.get(...params).count;
 }
 
 module.exports = {

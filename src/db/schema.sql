@@ -22,6 +22,8 @@ CREATE TABLE IF NOT EXISTS error_log (
   message TEXT NOT NULL
 );
 
+CREATE INDEX IF NOT EXISTS idx_error_log_app_id ON error_log(app_id);
+
 -- Invalid tokens table
 CREATE TABLE IF NOT EXISTS invalid_tokens (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
