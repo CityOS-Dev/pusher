@@ -28,6 +28,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     label { display: block; margin-bottom: 5px; }
     input, select, textarea { width: 100%; padding: 8px; background: #3a3a3a; border: 1px solid #4a4a4a; color: #e0e0e0; border-radius: 4px; }
     textarea { min-height: 100px; font-family: monospace; }
+    .pagination { margin-top: 15px; display: flex; gap: 10px; align-items: center; }
+    .page-info { color: #888; }
   </style>
 </head>
 <body>
@@ -59,6 +61,11 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         </thead>
         <tbody id="tokens-body"></tbody>
       </table>
+      <div class="pagination">
+        <button class="btn" onclick="previousPage()">Previous</button>
+        <span class="page-info" id="page-info">Page 1</span>
+        <button class="btn" onclick="nextPage()">Next</button>
+      </div>
     </div>
 
     <div class="section">
@@ -102,6 +109,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   </div>
 
   <script>
+    let currentPage = 0;
+
     async function loadStats() {
       const res = await fetch('/dashboard/api/stats');
       const data = await res.json();
@@ -141,11 +150,13 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     }
 
     async function loadInvalidTokens(page = 0) {
+      currentPage = page;
       const appId = document.getElementById('appIdFilter').value;
       const url = appId ? \`/dashboard/api/invalid-tokens?app_id=\${appId}&limit=100&offset=\${page * 100}\` : \`/dashboard/api/invalid-tokens?limit=100&offset=\${page * 100}\`;
       const res = await fetch(url);
       const data = await res.json();
       document.getElementById('token-count').textContent = \`Total: \${data.count}\`;
+      document.getElementById('page-info').textContent = \`Page \${page + 1}\`;
       const tbody = document.getElementById('tokens-body');
       tbody.innerHTML = '';
       data.tokens.forEach(t => {
@@ -153,12 +164,22 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       });
     }
 
+    async function previousPage() {
+      if (currentPage > 0) {
+        await loadInvalidTokens(currentPage - 1);
+      }
+    }
+
+    async function nextPage() {
+      await loadInvalidTokens(currentPage + 1);
+    }
+
     async function clearInvalidTokens() {
       if (confirm('Clear all invalid tokens?')) {
         const res = await fetch('/dashboard/api/invalid-tokens', { method: 'DELETE' });
         const data = await res.json();
         alert(\`Cleared \${data.deleted} tokens\`);
-        loadInvalidTokens();
+        loadInvalidTokens(currentPage);
       }
     }
 

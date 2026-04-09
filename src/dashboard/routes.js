@@ -47,8 +47,17 @@ async function routes(fastify, options) {
   });
 
   // DELETE /dashboard/api/invalid-tokens - Clear invalid tokens
-  fastify.delete('/api/invalid-tokens', async (request, reply) => {
-    const { app_id } = request.body || {};
+  fastify.delete('/api/invalid-tokens', {
+    schema: {
+      querystring: {
+        type: 'object',
+        properties: {
+          app_id: { type: 'string' }
+        }
+      }
+    }
+  }, async (request, reply) => {
+    const { app_id } = request.query;
     const deleted = clearInvalidTokens(app_id || null);
     return { deleted };
   });
