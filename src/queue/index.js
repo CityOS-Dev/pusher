@@ -1,6 +1,6 @@
 // src/queue/index.js
 const { Queue, Worker } = require('bullmq');
-const processJob = require('./processor');
+const { processJob } = require('./processor');
 const queueConfig = require('../../config/queue.config');
 const pino = require('pino');
 
@@ -56,11 +56,7 @@ async function startWorker() {
     processJob,
     {
       connection,
-      concurrency: 10,
-      limiter: {
-        max: queueConfig.queues.high.rateLimit.limit,
-        duration: queueConfig.queues.high.rateLimit.interval
-      }
+      concurrency: 10
     }
   );
 

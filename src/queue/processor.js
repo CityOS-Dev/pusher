@@ -61,4 +61,7 @@ async function processJob(job) {
   }
 }
 
-module.exports = processJob;
+module.exports = {
+  getAppConfig,
+  processJob
+};
