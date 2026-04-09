@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Certificates and keys
+certs/
+*.pem
+*.key
+*.json
+!package.json
+!pm2.config.js
+
+# Database
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Logs
+logs/
+*.log
+
+# Environment
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
