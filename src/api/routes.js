@@ -1,6 +1,6 @@
 // src/api/routes.js
-const { addJob, getQueueStats } = require('../queue');
-const { sendSchema } = require('./schema');
+const { addJob } = require('../queue')
+const { sendSchema } = require('./schema')
 
 async function routes(fastify, options) {
   // POST /send - Send push notifications
@@ -12,46 +12,32 @@ async function routes(fastify, options) {
           type: 'object',
           properties: {
             message: { type: 'string' },
-            jobIds: { type: 'array', items: { type: 'string' } }
-          }
-        }
-      }
-    }
+            jobIds: { type: 'array', items: { type: 'string' } },
+          },
+        },
+      },
+    },
   }, async (request, reply) => {
-    const { app_id, priority, recipients, request: req } = request.body;
+    const { app_id, priority, recipients, request: req } = request.body
 
     try {
       const jobIds = await addJob(priority, {
         app_id,
         recipients,
-        request: req
-      });
+        request: req,
+      })
 
       return reply.code(202).send({
         message: 'Push notifications queued',
-        jobIds
-      });
+        jobIds,
+      })
     } catch (error) {
-      request.log.error(error);
+      request.log.error(error)
       return reply.code(500).send({
-        error: 'Failed to queue push notifications'
-      });
+        error: 'Failed to queue push notifications',
+      })
     }
-  });
-
-  // GET /health - Health check
-  fastify.get('/health', async (request, reply) => {
-    const stats = {
-      high: await getQueueStats('high'),
-      standard: await getQueueStats('standard')
-    };
-
-    return {
-      status: 'ok',
-      timestamp: new Date().toISOString(),
-      queues: stats
-    };
-  });
+  })
 }
 
-module.exports = routes;
+module.exports = routes

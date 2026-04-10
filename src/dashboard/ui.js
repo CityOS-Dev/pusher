@@ -37,13 +37,10 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     <h1>Push Notification Dashboard</h1>
 
     <div class="section">
-      <h2>Statistics (Last 120 Hours)</h2>
-      <div id="stats" class="stats-grid">Loading...</div>
-    </div>
-
-    <div class="section">
       <h2>Queue Management</h2>
-      <p><a href="/dashboard/queues" class="btn" target="_blank">Open Bull Board</a></p>
+      <div style="margin-bottom: 20px;">
+        <a href="/dashboard/queues" class="btn" style="text-decoration: none;" target="_blank">Open Bull Board</a>
+      </div>
       <div id="queue-stats" class="stats-grid">Loading...</div>
     </div>
 
@@ -97,8 +94,10 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           <label>Request (JSON):</label>
           <textarea id="test-request" required>{
   "payload": {
-    "title": "Test Notification",
-    "body": "This is a test"
+    "notification": {
+      "title": "Test Notification",
+      "body": "This is a test"
+    }
   }
 }</textarea>
         </div>
@@ -106,35 +105,47 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       </form>
       <div id="test-result" style="margin-top: 15px;"></div>
     </div>
+    
+    <div class="section">
+      <h2>Statistics</h2>
+      <table id="stats">
+        <thead>
+          <tr><td>DateTime</td><td>App</td><td>Success</td><td>Failed</td></tr>
+        </thead>
+        <tbody id="stats-body">
+        </tbody>
+      </table>
+    </div>
   </div>
 
   <script>
-    let currentPage = 0;
+    let currentPage = 0
 
     async function loadStats() {
-      const res = await fetch('/dashboard/api/stats');
-      const data = await res.json();
-      const container = document.getElementById('stats');
-      container.innerHTML = '';
-      for (const [appId, stats] of Object.entries(data.apps)) {
-        const totalSuccess = stats.success.reduce((a, b) => a + b, 0);
-        const totalFail = stats.fail.reduce((a, b) => a + b, 0);
+      const res = await fetch('/dashboard/api/stats')
+      const data = await res.json()
+      const container = document.getElementById('stats-body')
+      container.innerHTML = ''
+      for (const item of data) {
         container.innerHTML += \`
-          <div class="stat-card">
-            <div class="stat-label">\${appId}</div>
-            <div class="stat-value" style="color: #4eff4a;">\${totalSuccess}</div>
-            <div class="stat-label">Success</div>
-            <div class="stat-value" style="color: #ff4a4a; font-size: 18px;">\${totalFail}</div>
-            <div class="stat-label">Failed</div>
-          </div>
-        \`;
+          <tr>
+            <td>\${item.hour}</td>
+            <td>\${item.app_id}</td>
+            <td style="color: #4eff4a;">\${item.sent_success}</td>
+            <td style="color: #ff4a4a; font-size: 18px;">\${item.sent_fail}</td>
+          </tr>
+        \`
       }
     }
 
     async function loadQueueStats() {
-      const res = await fetch('/health');
-      const data = await res.json();
-      const container = document.getElementById('queue-stats');
+      const res = await fetch('/health')
+      const data = await res.json()
+      const container = document.getElementById('queue-stats')
+      if (!data.queues) {
+        container.innerHTML = '<div style="color: #ff4a4a;">Queue stats not available</div>'
+        return
+      }
       container.innerHTML = \`
         <div class="stat-card">
           <div class="stat-label">High Priority</div>
@@ -146,50 +157,60 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           <div class="stat-value">\${data.queues.standard.active}</div>
           <div class="stat-label">Active</div>
         </div>
-      \`;
+        <div class="stat-card">
+          <div class="stat-label">High Waiting</div>
+          <div class="stat-value">\${data.queues.high.waiting}</div>
+          <div class="stat-label">Jobs</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Standard Waiting</div>
+          <div class="stat-value">\${data.queues.standard.waiting}</div>
+          <div class="stat-label">Jobs</div>
+        </div>
+      \`
     }
 
     async function loadInvalidTokens(page = 0) {
-      currentPage = page;
-      const appId = document.getElementById('appIdFilter').value;
-      const url = appId ? \`/dashboard/api/invalid-tokens?app_id=\${appId}&limit=100&offset=\${page * 100}\` : \`/dashboard/api/invalid-tokens?limit=100&offset=\${page * 100}\`;
-      const res = await fetch(url);
-      const data = await res.json();
-      document.getElementById('token-count').textContent = \`Total: \${data.count}\`;
-      document.getElementById('page-info').textContent = \`Page \${page + 1}\`;
-      const tbody = document.getElementById('tokens-body');
-      tbody.innerHTML = '';
+      currentPage = page
+      const appId = document.getElementById('appIdFilter').value
+      const url = appId ? \`/dashboard/api/invalid-tokens?app_id=\${appId}&limit=100&offset=\${page * 100}\` : \`/dashboard/api/invalid-tokens?limit=100&offset=\${page * 100}\`
+      const res = await fetch(url)
+      const data = await res.json()
+      document.getElementById('token-count').textContent = \`Total: \${data.count}\`
+      document.getElementById('page-info').textContent = \`Page \${page + 1}\`
+      const tbody = document.getElementById('tokens-body')
+      tbody.innerHTML = ''
       data.tokens.forEach(t => {
-        tbody.innerHTML += \`<tr><td>\${t.app_id}</td><td>\${t.token.slice(0, 20)}...</td><td>\${t.type}</td><td>\${t.reason}</td><td>\${new Date(t.detected_at).toLocaleString()}</td></tr>\`;
-      });
+        tbody.innerHTML += \`<tr><td>\${t.app_id}</td><td>\${t.token.slice(0, 20)}...</td><td>\${t.type}</td><td>\${t.reason}</td><td>\${new Date(t.detected_at).toLocaleString()}</td></tr>\`
+      })
     }
 
     async function previousPage() {
       if (currentPage > 0) {
-        await loadInvalidTokens(currentPage - 1);
+        await loadInvalidTokens(currentPage - 1)
       }
     }
 
     async function nextPage() {
-      await loadInvalidTokens(currentPage + 1);
+      await loadInvalidTokens(currentPage + 1)
     }
 
     async function clearInvalidTokens() {
       if (confirm('Clear all invalid tokens?')) {
-        const res = await fetch('/dashboard/api/invalid-tokens', { method: 'DELETE' });
-        const data = await res.json();
-        alert(\`Cleared \${data.deleted} tokens\`);
-        loadInvalidTokens(currentPage);
+        const res = await fetch('/dashboard/api/invalid-tokens', { method: 'DELETE' })
+        const data = await res.json()
+        alert(\`Cleared \${data.deleted} tokens\`)
+        loadInvalidTokens(currentPage)
       }
     }
 
     async function testSend(e) {
-      e.preventDefault();
-      const resultDiv = document.getElementById('test-result');
-      resultDiv.textContent = 'Sending...';
+      e.preventDefault()
+      const resultDiv = document.getElementById('test-result')
+      resultDiv.textContent = 'Sending...'
 
       try {
-        const request = JSON.parse(document.getElementById('test-request').value);
+        const request = JSON.parse(document.getElementById('test-request').value)
         const res = await fetch('/dashboard/api/test-send', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -198,35 +219,35 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
             token: document.getElementById('test-token').value,
             type: document.getElementById('test-type').value,
             priority: document.getElementById('test-priority').value,
-            request
-          })
-        });
-        const data = await res.json();
-        resultDiv.innerHTML = \`<span style="color: #4eff4a;">\${data.message}</span>\`;
+            request,
+          }),
+        })
+        const data = await res.json()
+        resultDiv.innerHTML = \`<span style="color: #4eff4a;">\${data.message}</span>\`
       } catch (err) {
-        resultDiv.innerHTML = \`<span style="color: #ff4a4a;">Error: \${err.message}</span>\`;
+        resultDiv.innerHTML = \`<span style="color: #ff4a4a;">Error: \${err.message}</span>\`
       }
     }
 
     async function loadAppIds() {
-      const res = await fetch('/health');
-      // Apps would be exposed via a separate endpoint, using config for now
-      const select = document.getElementById('test-app-id');
-      const apps = ['my_ios_app', 'my_android_app'];
+      const res = await fetch('/dashboard/api/queue-stats')
+      const select = document.getElementById('test-app-id')
+      // Default app IDs (hardcoded for now, can be loaded from config endpoint)
+      const apps = ['sb_ios', 'sb_android', 'sb_android_nw', 'my_ios_app', 'my_android_app']
       apps.forEach(app => {
-        const opt = document.createElement('option');
-        opt.value = app;
-        opt.textContent = app;
-        select.appendChild(opt);
-      });
+        const opt = document.createElement('option')
+        opt.value = app
+        opt.textContent = app
+        select.appendChild(opt)
+      })
     }
 
-    loadStats();
-    loadQueueStats();
-    loadInvalidTokens();
-    loadAppIds();
-    setInterval(loadStats, 30000);
-    setInterval(loadQueueStats, 10000);
+    loadStats()
+    loadQueueStats()
+    loadInvalidTokens()
+    loadAppIds()
+    setInterval(loadStats, 30000)
+    setInterval(loadQueueStats, 10000)
   </script>
 </body>
 </html>`;

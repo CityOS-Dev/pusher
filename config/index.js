@@ -3,11 +3,11 @@ module.exports = {
   host: '127.0.0.1',
   log: {
     level: process.env.LOG_LEVEL || 'info',
-    file: './logs/app.log'
+    file: './logs/app.log',
   },
   db: {
-    path: './data/pusher.db'
+    path: './data/pusher.db',
   },
   apps: require('./apps.config'),
-  queue: require('./queue.config')
-};
+  queue: require('./queue.config'),
+}

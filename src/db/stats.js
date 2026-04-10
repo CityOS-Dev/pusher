@@ -44,7 +44,7 @@ function getStats(hoursBack = 120) {
     result.apps[row.app_id].fail.push(row.sent_fail);
   });
 
-  return result;
+  return rows;
 }
 
 function getStatsByApp(appId, hoursBack = 120) {

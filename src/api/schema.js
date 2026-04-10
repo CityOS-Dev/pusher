@@ -1,7 +1,7 @@
 // src/api/schema.js
-const apps = require('../../config/apps.config.js');
+const apps = require('../../config/apps.config.js')
 
-const appIds = apps.apps.map(app => app.id);
+const appIds = apps.apps.map(app => app.id)
 
 const sendSchema = {
   type: 'object',
@@ -9,11 +9,11 @@ const sendSchema = {
   properties: {
     app_id: {
       type: 'string',
-      enum: appIds
+      enum: appIds,
     },
     priority: {
       type: 'string',
-      enum: ['high', 'standard']
+      enum: ['high', 'standard'],
     },
     recipients: {
       type: 'array',
@@ -24,20 +24,20 @@ const sendSchema = {
         properties: {
           id: { type: 'string' },
           token: { type: 'string', minLength: 1 },
-          type: { type: 'string', enum: ['ios', 'android'] }
-        }
-      }
+          type: { type: 'string', enum: ['ios', 'android'] },
+        },
+      },
     },
     request: {
       type: 'object',
       required: ['payload'],
       properties: {
         headers: { type: 'object', additionalProperties: true },
-        payload: { type: 'object', additionalProperties: true }
-      }
-    }
-  }
-};
+        payload: { type: 'object', additionalProperties: true },
+      },
+    },
+  },
+}
 
 const testSendSchema = {
   type: 'object',
@@ -45,7 +45,7 @@ const testSendSchema = {
   properties: {
     app_id: {
       type: 'string',
-      enum: appIds
+      enum: appIds,
     },
     token: { type: 'string', minLength: 1 },
     type: { type: 'string', enum: ['ios', 'android'] },
@@ -55,13 +55,13 @@ const testSendSchema = {
       required: ['payload'],
       properties: {
         headers: { type: 'object', additionalProperties: true },
-        payload: { type: 'object', additionalProperties: true }
-      }
-    }
-  }
-};
+        payload: { type: 'object', additionalProperties: true },
+      },
+    },
+  },
+}
 
 module.exports = {
   sendSchema,
-  testSendSchema
-};
+  testSendSchema,
+}
