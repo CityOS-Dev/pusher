@@ -17,8 +17,9 @@ function createQueues() {
   };
 
   // Create high priority queue
-  queues.high = new Queue(`${queueConfig.redis.prefix}${queueConfig.queues.high.name}`, {
+  queues.high = new Queue(queueConfig.queues.high.name, {
     connection,
+    prefix: queueConfig.redis.prefix,
     defaultJobOptions: {
       attempts: queueConfig.retryAttempts,
       backoff: {
@@ -29,8 +30,9 @@ function createQueues() {
   });
 
   // Create standard priority queue
-  queues.standard = new Queue(`${queueConfig.redis.prefix}${queueConfig.queues.standard.name}`, {
+  queues.standard = new Queue(queueConfig.queues.standard.name, {
     connection,
+    prefix: queueConfig.redis.prefix,
     defaultJobOptions: {
       attempts: queueConfig.retryAttempts,
       backoff: {

@@ -50,8 +50,7 @@ async function buildServer() {
     if (queueMap.high) bullBoardQueues.push(new BullMQAdapter(queueMap.high));
     if (queueMap.standard) bullBoardQueues.push(new BullMQAdapter(queueMap.standard));
 
-    const bullBoardApi = serverAdapter.getBullBoard();
-    bullBoardApi.setQueues(bullBoardQueues);
+    serverAdapter.setQueues(bullBoardQueues);
   });
 
   // Health check

@@ -9,17 +9,11 @@ const sendSchema = {
   properties: {
     app_id: {
       type: 'string',
-      enum: appIds,
-      errorMessage: {
-        enum: 'Invalid app_id'
-      }
+      enum: appIds
     },
     priority: {
       type: 'string',
-      enum: ['high', 'standard'],
-      errorMessage: {
-        enum: 'Priority must be high or standard'
-      }
+      enum: ['high', 'standard']
     },
     recipients: {
       type: 'array',
@@ -28,7 +22,7 @@ const sendSchema = {
         type: 'object',
         required: ['token', 'type'],
         properties: {
-          id: { type: ['string', 'number'] },
+          id: { type: 'string' },
           token: { type: 'string', minLength: 1 },
           type: { type: 'string', enum: ['ios', 'android'] }
         }
