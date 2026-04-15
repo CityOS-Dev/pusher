@@ -13,12 +13,12 @@
     "pm2:delete": "pm2 delete pusher"
   },
   "dependencies": {
-    "fastify": "^4.26.2",
     "@bull-board/api": "^5.20.1",
     "@bull-board/fastify": "^5.20.1",
-    "bullmq": "^5.8.6",
-    "better-sqlite3": "^9.4.3",
     "apn": "^2.2.0",
+    "better-sqlite3": "^9.4.3",
+    "bullmq": "^5.8.6",
+    "fastify": "^4.26.2",
     "firebase-admin": "^12.1.0",
     "pino": "^8.19.0",
     "pino-pretty": "^10.3.1"

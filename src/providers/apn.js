@@ -1,5 +1,5 @@
 // src/providers/apn.js
-const apn = require('apn')
+const apn = require('@parse/node-apn')
 const fs = require('fs')
 const path = require('path')
 const pino = require('pino')
@@ -34,9 +34,8 @@ async function send(recipients, request, appConfig) {
   const failures = []
   const invalidTokens = []
 
-  const notification = new apn.Notification({
-    ...request.payload,
-  })
+  const notification = new apn.Notification()
+  notification.payload = { ...request.payload }
 
   // Add custom headers
   if (request.headers) {
@@ -45,11 +44,16 @@ async function send(recipients, request, appConfig) {
         notification.priority = parseInt(value)
       } else if (key === 'apns-expiration') {
         notification.expiry = parseInt(value)
+      } else if (key === 'apns-push-type') {
+        notification.pushType = value  // For VoIP: 'voip', 'alert', etc.
+      } else if (key === 'apns-topic') {
+        notification.topic = value  // Override topic from config
       }
     })
   }
 
-  notification.topic = appConfig.topic || undefined
+  // Use topic from header, config, or undefined
+  notification.topic = notification.topic || appConfig.topic || undefined
 
   const deviceTokens = recipients.map(r => r.token)
   const result = await provider.send(notification, deviceTokens)
