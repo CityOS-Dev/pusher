@@ -2,9 +2,6 @@
 const apn = require('@parse/node-apn')
 const fs = require('fs')
 const path = require('path')
-const pino = require('pino')
-
-const logger = pino({ level: 'info' })
 
 function createProvider(appConfig) {
   const certPath = path.resolve(appConfig.cert)
