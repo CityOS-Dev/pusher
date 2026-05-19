@@ -54,12 +54,16 @@ async function processJob(job) {
 
     logger.info({ jobId: job.id, success: result.success, failures: result.failures.length }, 'Job completed')
 
-    // Call tracker: emit per-recipient stage. callId arrives in request.payload.call_id
-    // (iOS) или request.payload.data.call_id (Android), put там PushNotification.php
-    // в nw-core-ng.
+    // Call tracker: emit per-recipient stage. callId arrives in:
+    //   - request.payload.call_id (iOS, PushNotification.php hik)
+    //   - request.payload.data.call_id (Android, PushNotification.php hik)
+    //   - request.payload.callId / data.callId (camelCase fallback — на случай если
+    //     какой-то источник пришлёт camel-case; SIP-демон до фикса 2026-05-19 так делал)
+    const p = request && request.payload
+    const pd = p && p.data
     const callId =
-      (request && request.payload && request.payload.call_id) ||
-      (request && request.payload && request.payload.data && request.payload.data.call_id) ||
+      (p && (p.call_id || p.callId)) ||
+      (pd && (pd.call_id || pd.callId)) ||
       null
     if (callId) {
       const isIos = appConfig.type === 'ios'
