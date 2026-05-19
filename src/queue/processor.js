@@ -1,6 +1,7 @@
 // src/queue/processor.js
 const apnProvider = require('../providers/apn')
 const fcmProvider = require('../providers/fcm')
+const tracker = require('../providers/call_tracker')
 const { upsertStats } = require('../db/stats')
 const { logError } = require('../db/errors')
 const { addInvalidTokens } = require('../db/tokens')
@@ -52,6 +53,36 @@ async function processJob(job) {
     }
 
     logger.info({ jobId: job.id, success: result.success, failures: result.failures.length }, 'Job completed')
+
+    // Call tracker: emit per-recipient stage. callId arrives in request.payload.call_id
+    // (iOS) или request.payload.data.call_id (Android), put там PushNotification.php
+    // в nw-core-ng.
+    const callId =
+      (request && request.payload && request.payload.call_id) ||
+      (request && request.payload && request.payload.data && request.payload.data.call_id) ||
+      null
+    if (callId) {
+      const isIos = appConfig.type === 'ios'
+      const okStage   = isIos ? 'apns_ok'   : 'fcm_ok'
+      const failStage = isIos ? 'apns_fail' : 'fcm_fail'
+      const failedIds = new Set(result.failures.map(f => f.id))
+      for (const rcpt of recipients) {
+        const tokenTail = rcpt.token ? String(rcpt.token).slice(-4) : ''
+        if (failedIds.has(rcpt.id)) {
+          const failureInfo = result.failures.find(f => f.id === rcpt.id)
+          tracker.report(callId, failStage, {
+            user_id: rcpt.id,
+            token_tail: tokenTail,
+            error: failureInfo ? failureInfo.error : 'unknown',
+          })
+        } else {
+          tracker.report(callId, okStage, {
+            user_id: rcpt.id,
+            token_tail: tokenTail,
+          })
+        }
+      }
+    }
 
     return result
   } catch (error) {
