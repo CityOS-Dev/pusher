@@ -36,6 +36,55 @@ function isInvalidTokenError(error) {
     code === 'messaging/registration-token-not-registered'
 }
 
+// Top-level errors from Firebase SDK that we should retry: transient network
+// blips where Google reset the HTTP/2 stream or DNS failed. Firebase SDK does
+// NOT auto-retry these — observed 2026-05-19 как pusher_http_error for SIP
+// home_80/user_328. После единственного ECONNRESET вся multicast улетает в
+// throw, и PHP-сторона видит HTTP error => call-tracker красным.
+function isRetriableNetworkError(error) {
+  if (!error) return false
+  const code = error.errorInfo?.code || error.code
+  if (code === 'app/network-error') return true
+  const msg = String(error.message || '')
+  return /ECONNRESET|ETIMEDOUT|EAI_AGAIN|socket hang up|network timeout/i.test(msg)
+}
+
+const RETRY_DELAYS_MS = [500, 1000, 2000]   // exp.backoff: 1 initial + 3 retries = до 4 попыток total
+
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms))
+}
+
+async function sendMulticastWithRetry(app, message, appId) {
+  let lastError
+  for (let attempt = 1; attempt <= RETRY_DELAYS_MS.length + 1; attempt++) {
+    try {
+      const result = await app.messaging().sendEachForMulticast(message)
+      if (attempt > 1) {
+        logger.info({ appId, attempt, recipientCount: message.tokens.length },
+          'FCM send succeeded after retry')
+      }
+      return result
+    } catch (error) {
+      lastError = error
+      if (!isRetriableNetworkError(error)) throw error
+      if (attempt > RETRY_DELAYS_MS.length) break
+      const delay = RETRY_DELAYS_MS[attempt - 1]
+      logger.warn({
+        appId, attempt, delay,
+        errCode: error.errorInfo?.code || error.code,
+        errMsg: String(error.message || '').slice(0, 200),
+      }, 'FCM transient network error, retrying')
+      await sleep(delay)
+    }
+  }
+  logger.error({
+    appId, attempts: RETRY_DELAYS_MS.length + 1,
+    errCode: lastError.errorInfo?.code || lastError.code,
+  }, 'FCM send failed after all retries')
+  throw lastError
+}
+
 async function send(recipients, request, appConfig) {
   const app = getApp(appConfig)
   const tokens = recipients.map(r => r.token)
@@ -61,7 +110,7 @@ async function send(recipients, request, appConfig) {
   let result
 
   try {
-    result = await app.messaging().sendEachForMulticast(message)
+    result = await sendMulticastWithRetry(app, message, appConfig.id)
   } catch (error) {
     logger.error({ error, appId: appConfig.id }, 'FCM send failed')
     throw error
