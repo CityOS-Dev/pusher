@@ -92,6 +92,24 @@ async function processJob(job) {
   } catch (error) {
     logger.error({ error, jobId: job.id }, 'Job failed')
     logError(app_id, 'JOB_ERROR', error.message)
+
+    const p = request && request.payload
+    const pd = p && p.data
+    const callId =
+      (p && (p.call_id || p.callId)) ||
+      (pd && (pd.call_id || pd.callId)) ||
+      null
+    if (callId) {
+      const failStage = appConfig.type === 'ios' ? 'apns_fail' : 'fcm_fail'
+      for (const rcpt of recipients) {
+        tracker.report(callId, failStage, {
+          user_id: rcpt.id,
+          token_tail: String(rcpt.token || '').slice(-4),
+          error: error.message || 'unknown',
+        })
+      }
+    }
+
     throw error
   }
 }
