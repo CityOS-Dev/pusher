@@ -11,7 +11,7 @@
   "dependencies": {
     "@bull-board/api": "^5.20.1",
     "@bull-board/fastify": "^5.20.1",
-    "@parse/node-apn": "^8.1.0",
+    "@parse/node-apn": "^7.1.0",
     "better-sqlite3": "^9.4.3",
     "bullmq": "^5.8.6",
     "fastify": "^4.29.1",
@@ -19,7 +19,13 @@
     "pino": "^8.19.0",
     "pino-pretty": "^10.3.1"
   },
+  "devDependencies": {
+    "pm2": "^5.4.0"
+  },
+  "resolutions": {
+    "toad-cache": "3.7.0"
+  },
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=18.0.0"
   }
 }
