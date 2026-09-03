@@ -96,14 +96,25 @@ async function send(recipients, request, appConfig) {
     tokens,
   }
 
-  // Add FCM-specific options from headers
+  // FCM HTTP v1 options from headers.
+  // NOTE: The HTTP v1 API carries priority and TTL in the `android` config,
+  // NOT in the legacy `options` object. `options.priority` / `options.timeToLive`
+  // are legacy FCM fields that the HTTP v1 endpoint silently ignores, so any
+  // priority / TTL set there was never actually applied.
   if (request.headers) {
-    message.options = {}
-    if (request.headers['fcm-priority']) {
-      message.options.priority = request.headers['fcm-priority']
-    }
-    if (request.headers['fcm-ttl']) {
-      message.options.timeToLive = parseInt(request.headers['fcm-ttl'])
+    const fcmPriority = request.headers['fcm-priority']
+    const fcmTtl = request.headers['fcm-ttl']
+    if (fcmPriority || fcmTtl) {
+      message.android = { ...(message.android || {}) }
+      if (fcmPriority) {
+        // v1 expects one of: "high" | "normal"
+        message.android.priority = fcmPriority
+      }
+      if (fcmTtl) {
+        // fcm-ttl header is in seconds (legacy `time_to_live` convention);
+        // the v1 AndroidConfig.ttl expects a duration in milliseconds.
+        message.android.ttl = parseInt(fcmTtl, 10) * 1000
+      }
     }
   }
 
