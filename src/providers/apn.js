@@ -82,7 +82,7 @@ async function send(recipients, request, appConfig) {
     }
   })
 
-  provider.shutdown()
+  await provider.shutdown()
 
   return {
     success: result.sent.length,

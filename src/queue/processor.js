@@ -74,13 +74,13 @@ async function processJob(job) {
         const tokenTail = rcpt.token ? String(rcpt.token).slice(-4) : ''
         if (failedIds.has(rcpt.id)) {
           const failureInfo = result.failures.find(f => f.id === rcpt.id)
-          tracker.report(callId, failStage, {
+          await tracker.report(callId, failStage, {
             user_id: rcpt.id,
             token_tail: tokenTail,
             error: failureInfo ? failureInfo.error : 'unknown',
           })
         } else {
-          tracker.report(callId, okStage, {
+          await tracker.report(callId, okStage, {
             user_id: rcpt.id,
             token_tail: tokenTail,
           })
@@ -102,7 +102,7 @@ async function processJob(job) {
     if (callId) {
       const failStage = appConfig.type === 'ios' ? 'apns_fail' : 'fcm_fail'
       for (const rcpt of recipients) {
-        tracker.report(callId, failStage, {
+        await tracker.report(callId, failStage, {
           user_id: rcpt.id,
           token_tail: String(rcpt.token || '').slice(-4),
           error: error.message || 'unknown',

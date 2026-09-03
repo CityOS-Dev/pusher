@@ -120,7 +120,7 @@ async function start() {
 
 // Start if run directly
 if (require.main === module) {
-  start()
+  start().then()
 }
 
 module.exports = { buildServer, start, queues }

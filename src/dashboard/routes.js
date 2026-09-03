@@ -2,7 +2,6 @@
 const { getStats } = require('../db/stats')
 const { getQueueStats } = require('../queue')
 const { getInvalidTokens, getInvalidTokenCount, clearInvalidTokens, addInvalidToken } = require('../db/tokens')
-const { send } = require('../queue')
 const apnProvider = require('../providers/apn')
 const fcmProvider = require('../providers/fcm')
 const { testSendSchema } = require('../api/schema')

@@ -13,7 +13,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     h1 { margin-bottom: 20px; }
     .section { margin-bottom: 30px; padding: 20px; background: #2a2a2a; border-radius: 8px; }
     h2 { margin-bottom: 15px; color: #4a9eff; }
-    .btn { padding: 8px 16px; background: #4a9eff; color: white; border: none; border-radius: 4px; cursor: pointer; margin-right: 10px; }
+    .btn { padding: 8px 16px; background: #4a9eff; color: #ffffff; border: none; border-radius: 4px; cursor: pointer; margin-right: 10px; }
     .btn:hover { background: #3a8eef; }
     .btn-danger { background: #ff4a4a; }
     .btn-danger:hover { background: #ef3a3a; }
@@ -200,7 +200,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         const res = await fetch('/dashboard/api/invalid-tokens', { method: 'DELETE' })
         const data = await res.json()
         alert(\`Cleared \${data.deleted} tokens\`)
-        loadInvalidTokens(currentPage)
+        await loadInvalidTokens(currentPage)
       }
     }
 
@@ -230,7 +230,6 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     }
 
     async function loadAppIds() {
-      const res = await fetch('/dashboard/api/queue-stats')
       const select = document.getElementById('test-app-id')
       // Default app IDs (hardcoded for now, can be loaded from config endpoint)
       const apps = ['sb_ios', 'sb_android', 'sb_android_nw', 'my_ios_app', 'my_android_app']
