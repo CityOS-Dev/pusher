@@ -1,8 +1,51 @@
 // src/api/routes.js
 const { addJob } = require('../queue')
 const { sendSchema } = require('./schema')
+const { getInvalidTokens, getInvalidTokenCount, deleteInvalidTokens } = require('../db/tokens')
 
 async function routes(fastify, options) {
+  // GET /invalid-tokens - List invalid tokens (public, for external consumers)
+  fastify.get('/invalid-tokens', {
+    schema: {
+      querystring: {
+        type: 'object',
+        properties: {
+          app_id: { type: 'string' },
+          type: { type: 'string', enum: ['ios', 'android'] },
+          limit: { type: 'integer', minimum: 1, maximum: 1000, default: 100 },
+          offset: { type: 'integer', minimum: 0, default: 0 },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    const { app_id, type, limit, offset } = request.query
+    const tokens = getInvalidTokens(app_id || null, limit, offset, type || null)
+    const count = getInvalidTokenCount(app_id || null, type || null)
+    return { tokens, count }
+  })
+
+  // DELETE /invalid-tokens - Delete processed invalid tokens by ids and/or tokens
+  fastify.delete('/invalid-tokens', {
+    schema: {
+      body: {
+        type: 'object',
+        properties: {
+          ids: { type: 'array', items: { type: 'integer' } },
+          tokens: { type: 'array', items: { type: 'string', minLength: 1 } },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    const { ids = [], tokens = [] } = request.body || {}
+
+    if ((!Array.isArray(ids) || ids.length === 0) && (!Array.isArray(tokens) || tokens.length === 0)) {
+      return reply.code(400).send({ error: 'Provide at least one of "ids" or "tokens"' })
+    }
+
+    const deleted = deleteInvalidTokens(ids, tokens)
+    return { deleted }
+  })
+
   // POST /send - Send push notifications
   fastify.post('/send', {
     schema: {
