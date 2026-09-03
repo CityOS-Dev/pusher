@@ -29,3 +29,5 @@ Thumbs.db
 
 .idea
 docs/
+
+/config/apps.config.js*
