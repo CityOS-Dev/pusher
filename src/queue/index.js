@@ -1,3 +1,4 @@
+const { describeFailure } = require('../providers/provider_errors')
 // src/queue/index.js
 const { Queue, Worker } = require('bullmq')
 const { processJob } = require('./processor')
@@ -84,11 +85,11 @@ async function startWorker() {
     })
 
     worker.on('failed', (job, error) => {
-      logger.error({ jobId: job?.id, error, queue: queueName }, 'Job failed')
+      logger.error({ jobId: job?.id, ...describeFailure(error), queue: queueName }, 'Job failed')
     })
 
     worker.on('error', (error) => {
-      logger.error({ error, queue: queueName }, 'Worker error')
+      logger.error({ ...describeFailure(error), queue: queueName }, 'Worker error')
     })
 
     worker.on('waiting', (job) => {

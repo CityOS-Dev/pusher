@@ -177,3 +177,26 @@ Dashboard is **localhost-only** (`127.0.0.1` or `::1`) for security:
 - Certificates and keys in `certs/` directory are gitignored
 - Logs stored in `logs/` directory (gitignored)
 - SQLite database stored in `data/pusher.db` (gitignored)
+
+
+## Call-provider diagnostic outcomes (2026-10-13)
+
+APNs/FCM failures include bounded `error_code`, `error_type`, `http_status`,
+`category`, `retryable` and `error_hash`. Transport errors preserve SDK codes such
+as ETIMEDOUT; absent recipient ids do not hide APNs rejects. Per-recipient tracker
+outcomes match token entries, rather than grouping failures solely by an optional
+recipient id.
+
+Diagnostic error_log/tracker records include exact call_id when supplied, job_id,
+attempt_index, SHA256 token_hash and token_tail. SDK message/stack and full tokens
+are not copied into new diagnostic rows/logs. The separate operational invalid_tokens
+store retains the token needed for pruning. Historical rows are not purged.
+
+`retryable` classifies the cause; it does not enable an extra retry loop. The existing
+queue/SDK retry schedule is unchanged until a separate call deadline/idempotency
+contract is ready. APN provider resources are shut down in finally; a cleanup error
+is logged safely and does not turn a successful send into a new delivery retry.
+
+Run local isolated verification with `node --test --test-concurrency=2`.
+The tests load the real provider/processor code and replace external SDK/credential,
+DB and logging boundaries; they never connect to Redis, Firebase or APNs.
