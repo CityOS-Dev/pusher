@@ -3,6 +3,7 @@ const admin = require('firebase-admin')
 const fs = require('fs')
 const path = require('path')
 const pino = require('pino')
+const { describeFailure } = require('./provider_errors')
 
 const logger = pino({ level: 'info' })
 
@@ -16,7 +17,7 @@ function getApp(appConfig) {
   const keyPath = path.resolve(appConfig.serviceAccount)
 
   if (!fs.existsSync(keyPath)) {
-    throw new Error(`Firebase service account key not found: ${keyPath}`)
+    throw Object.assign(new Error('Firebase service account key not found'), { code: 'MISSING_CREDENTIALS' })
   }
 
   const serviceAccount = JSON.parse(fs.readFileSync(keyPath, 'utf8'))
@@ -72,15 +73,14 @@ async function sendMulticastWithRetry(app, message, appId) {
       const delay = RETRY_DELAYS_MS[attempt - 1]
       logger.warn({
         appId, attempt, delay,
-        errCode: error.errorInfo?.code || error.code,
-        errMsg: String(error.message || '').slice(0, 200),
+        ...describeFailure(error, 'fcm'),
       }, 'FCM transient network error, retrying')
       await sleep(delay)
     }
   }
   logger.error({
     appId, attempts: RETRY_DELAYS_MS.length + 1,
-    errCode: lastError.errorInfo?.code || lastError.code,
+    ...describeFailure(lastError, 'fcm'),
   }, 'FCM send failed after all retries')
   throw lastError
 }
@@ -123,7 +123,7 @@ async function send(recipients, request, appConfig) {
   try {
     result = await sendMulticastWithRetry(app, message, appConfig.id)
   } catch (error) {
-    logger.error({ error, appId: appConfig.id }, 'FCM send failed')
+    logger.error({ ...describeFailure(error, 'fcm'), appId: appConfig.id }, 'FCM send failed')
     throw error
   }
 
@@ -136,7 +136,7 @@ async function send(recipients, request, appConfig) {
       failures.push({
         id: recipient.id,
         token: recipient.token,
-        error: error ? error.message : 'Unknown error',
+        ...describeFailure(error, 'fcm'),
       })
 
       if (isInvalidTokenError(error)) {

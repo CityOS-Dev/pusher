@@ -7,6 +7,7 @@ const { logError } = require('../db/errors')
 const { addInvalidTokens } = require('../db/tokens')
 const apps = require('../../config/apps.config')
 const pino = require('pino')
+const { describeFailure, tokenFingerprint } = require('../providers/provider_errors')
 
 const logger = pino({ level: 'info' })
 
@@ -16,6 +17,9 @@ function getAppConfig(appId) {
 
 async function processJob(job) {
   const { app_id, recipients, request } = job.data
+  const p = request && request.payload
+  const callId = p?.call_id || p?.callId || p?.data?.call_id || p?.data?.callId || null
+  const attempt = { call_id: callId, job_id: job.id, attempt_index: (job.attemptsMade || 0) + 1 }
 
   logger.info({ jobId: job.id, appId: app_id, recipientCount: recipients.length }, 'Processing job')
 
@@ -49,7 +53,8 @@ async function processJob(job) {
 
     // Log individual failures
     for (const failure of result.failures) {
-      logError(app_id, 'SEND_FAILED', JSON.stringify(failure))
+      const { token, ...diagnostic } = failure
+      logError(app_id, 'SEND_FAILED', JSON.stringify({ ...diagnostic, ...tokenFingerprint(token), ...attempt }))
     }
 
     logger.info({ jobId: job.id, success: result.success, failures: result.failures.length }, 'Job completed')
@@ -59,30 +64,31 @@ async function processJob(job) {
     //   - request.payload.data.call_id (Android, PushNotification.php hik)
     //   - request.payload.callId / data.callId (camelCase fallback — на случай если
     //     какой-то источник пришлёт camel-case; SIP-демон до фикса 2026-05-19 так делал)
-    const p = request && request.payload
-    const pd = p && p.data
-    const callId =
-      (p && (p.call_id || p.callId)) ||
-      (pd && (pd.call_id || pd.callId)) ||
-      null
     if (callId) {
       const isIos = appConfig.type === 'ios'
       const okStage   = isIos ? 'apns_ok'   : 'fcm_ok'
       const failStage = isIos ? 'apns_fail' : 'fcm_fail'
-      const failedIds = new Set(result.failures.map(f => f.id))
       for (const rcpt of recipients) {
-        const tokenTail = rcpt.token ? String(rcpt.token).slice(-4) : ''
-        if (failedIds.has(rcpt.id)) {
-          const failureInfo = result.failures.find(f => f.id === rcpt.id)
+        const fingerprint = tokenFingerprint(rcpt.token)
+        const failureInfo = result.failures.find(f => f.token === rcpt.token && (f.id == null || String(f.id) === String(rcpt.id)))
+        if (failureInfo) {
           await tracker.report(callId, failStage, {
             user_id: rcpt.id,
-            token_tail: tokenTail,
-            error: failureInfo ? failureInfo.error : 'unknown',
+            ...fingerprint,
+            error: failureInfo.error,
+            error_code: failureInfo.error_code,
+            error_type: failureInfo.error_type,
+            http_status: failureInfo.http_status,
+            retryable: failureInfo.retryable,
+            category: failureInfo.category,
+            error_hash: failureInfo.error_hash,
+            ...attempt,
           })
         } else {
           await tracker.report(callId, okStage, {
             user_id: rcpt.id,
-            token_tail: tokenTail,
+            ...fingerprint,
+            ...attempt,
           })
         }
       }
@@ -90,22 +96,18 @@ async function processJob(job) {
 
     return result
   } catch (error) {
-    logger.error({ error, jobId: job.id }, 'Job failed')
-    logError(app_id, 'JOB_ERROR', error.message)
+    const cause = describeFailure(error, appConfig.type === 'ios' ? 'apns' : 'fcm')
+    logger.error({ ...cause, ...attempt }, 'Job failed')
+    logError(app_id, 'JOB_ERROR', JSON.stringify({ ...cause, ...attempt }))
 
-    const p = request && request.payload
-    const pd = p && p.data
-    const callId =
-      (p && (p.call_id || p.callId)) ||
-      (pd && (pd.call_id || pd.callId)) ||
-      null
     if (callId) {
       const failStage = appConfig.type === 'ios' ? 'apns_fail' : 'fcm_fail'
       for (const rcpt of recipients) {
         await tracker.report(callId, failStage, {
           user_id: rcpt.id,
-          token_tail: String(rcpt.token || '').slice(-4),
-          error: error.message || 'unknown',
+          ...tokenFingerprint(rcpt.token),
+          ...cause,
+          ...attempt,
         })
       }
     }
