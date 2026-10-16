@@ -75,7 +75,10 @@ async function buildServer() {
     const [high, standard] = await Promise.all([getQueueStats('high'), getQueueStats('standard')])
     const stats = { high, standard }
     let delivery
-    try { delivery = { ...getStore().health(), storage_available: checkpointHealth().available } }
+    try {
+      const checkpoint = checkpointHealth()
+      delivery = { ...getStore().health(), storage_available: checkpoint.available, checkpoint }
+    }
     catch { delivery = { storage_available: false } }
     const ready = delivery.storage_available && Object.values(stats).every(q => q?.worker?.ready)
     if (!ready) reply.code(503)

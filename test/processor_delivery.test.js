@@ -4,14 +4,14 @@ const fs = require('node:fs'), path = require('node:path'), vm = require('node:v
 const Database = require('better-sqlite3')
 const { createStore } = require('../src/db/delivery')
 function harness(send, stats = () => {}, sourceStatus='active', options = {}) {
-  const db = new Database(':memory:'), store = createStore(db), events = []
+  const db = new Database(':memory:', options.trace ? { verbose: options.trace } : {}), store = createStore(db), events = []
   const deps = { './sip_source_guard': options.guard || {check:async()=>sourceStatus}, bullmq:{DelayedError:class DelayedError extends Error{}}, '../providers/apn': { send }, '../providers/fcm': { send },
-    '../providers/call_tracker': { report: async (...x) => events.push(x) },
+    '../providers/call_tracker': options.tracker ? options.tracker(store) : { reportMany: facts => { for (const f of facts) events.push([f.callId, f.stage, f.meta]) } },
     '../db/stats': { upsertStats: stats }, '../db/errors': { logError() {} }, '../db/tokens': { addInvalidTokens() {} },
     '../db/delivery': { getStore: () => options.store ? options.store(store) : store }, '../../config/apps.config': { apps: [{ id: 'a', type: 'ios' }] },
     './provider_deadline': { ...require('../src/queue/provider_deadline'), ...(options.budget ? { providerBudget: options.budget } : {}) },
     pino: () => ({ info() {}, error() {}, warn() {} }) }
-  const filename = path.resolve('src/queue/processor.js'), module = { exports: {} }
+  const filename = path.resolve(__dirname, '../src/queue/processor.js'), module = { exports: {} }
   vm.runInNewContext(fs.readFileSync(filename, 'utf8'), { module, exports: module.exports, Date,
     require: k => deps[k] || require(path.resolve(path.dirname(filename), k)) }, { filename })
   return { process: module.exports.processJob, health: module.exports.checkpointHealth, store, db, events }
@@ -131,7 +131,7 @@ test('expired and missing authoritative deadline never cause partial retry', asy
   assert.equal(sends,1)
 })
 test('hung provider resolves as unknown within operation timeout without resending', async()=>{
- const filename=path.resolve('src/queue/provider_deadline.js')
+ const filename=path.resolve(__dirname, '../src/queue/provider_deadline.js')
  const {sendWithin}=require(filename)
  await assert.rejects(sendWithin(()=>new Promise(()=>{}),5),e=>e.code==='ETIMEDOUT')
 })
@@ -167,4 +167,59 @@ test('ended source never submits; unknown moves to delayed before claiming witho
   assert.equal(sends,0);assert.equal(j.attemptsMade,0)
   if(status==='unknown'){assert.equal(moved[0].token,'lock-token');assert.equal(h.store.health().entries.length,0)}
  }
+})
+
+test('a successful older job cannot clear a newer concurrent checkpoint failure episode', async () => {
+  let release
+  const h = harness(async entries => {
+    await new Promise(resolve => { release = resolve })
+    return { success: entries.length, failures: [], invalidTokens: [] }
+  })
+  const old = job(), pending = h.process(old, 'old-lock')
+  await new Promise(resolve => setImmediate(resolve))
+  const newer = job(); newer.id = 'newer'; newer.moveToDelayed = async () => {}
+  h.db.pragma('query_only=ON')
+  await assert.rejects(h.process(newer, 'new-lock'), error => error.constructor.name === 'DelayedError')
+  h.db.pragma('query_only=OFF')
+  assert.equal(h.health().available, false)
+  release(); await pending
+  assert.equal(h.health().available, false, 'late success cannot recover a newer failure')
+  const fresh = job(); fresh.id = 'fresh'
+  const recovery = h.process(fresh, 'fresh-lock')
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(h.health().available, false, 'claim alone does not prove the full write cycle')
+  release(); await recovery
+  assert.equal(h.health().available, true)
+  assert.equal(h.health().failure_episode, 1)
+})
+
+test('real processor and tracker persist 500 outcomes in one diagnostic transaction on every disposition path', async () => {
+  for (const disposition of ['accepted', 'unknown', 'expired', 'ended']) {
+    const sql = []
+    const h = harness(async entries => {
+      if (disposition === 'unknown') throw Error('fixture')
+      return { success: entries.length, failures: [], invalidTokens: [] }
+    }, () => {}, 'ended', {
+      trace: query => sql.push(query),
+      tracker: store => {
+        const filename = path.resolve(__dirname, '../src/providers/call_tracker.js'), module = { exports: {} }
+        vm.runInNewContext(fs.readFileSync(filename, 'utf8'), { module, exports: module.exports, process: { env: {} },
+          require: key => key === '../db/delivery' ? { getStore: () => store, fingerprint: require('../src/db/delivery').fingerprint } : require(key),
+        }, { filename })
+        return module.exports
+      },
+    })
+    const j = job()
+    j.data.recipients = Array.from({ length: 500 }, (_, i) => ({ id: String(i), token: 'fixture-' + i }))
+    if (disposition === 'accepted') delete j.data.delivery
+    if (disposition === 'expired') j.data.delivery.expires_at_ms = 1
+    if (disposition === 'ended') j.data.delivery.source = { kind: 'sip', issuer: 'asterisk:fixture', session_id: '123.4' }
+    sql.length = 0
+    await h.process(j)
+    assert.equal(sql.filter(query => query === 'COMMIT').length, 3, disposition + ': claim, result and diagnostic commits')
+    assert.equal(sql.filter(query => query.startsWith('SELECT COUNT(*) AS n FROM diagnostic_outbox')).length, 1)
+    assert.equal(h.store.health().diagnostic_pending, 500)
+    assert.equal(new Set(h.db.prepare('SELECT event FROM diagnostic_outbox').all().map(row => JSON.parse(row.event).meta.event_id)).size, 500)
+    h.db.close()
+  }
 })

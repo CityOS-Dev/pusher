@@ -244,7 +244,7 @@ matching nonce/correlation, issuer, complete marker and stable-cli-status-v1 pro
 At most2 source queries run concurrently with a1500ms operation budget. Ended
 sources become skipped; unknown sources defer2seconds before any recipient claim,
 using Bull's manual delayed state without spending provider failure attempts.
-Existing jobs without source identity retain legacy behavior. An explicit expired
+Existing jobs without source identity skip only the SIP RPC gate; they still receive durable recipient checkpoints. An explicit expired
 deadline suppresses delivery immediately, even when the source query is unavailable.
 
 
@@ -295,3 +295,39 @@ operational token-store write failures log only token fingerprints. Full tokens
 remain in the operational invalid-token table because pruning needs them, never
 in these new error logs. Existing tombstone retention remains unchanged: choose
 an explicit safe archival policy before deleting accepted/unknown checkpoints.
+
+
+## Second review clarifications (2026-10-16)
+
+All queued jobs, including legacy jobs with **no delivery object**, receive
+per-job/per-recipient checkpoints unconditionally. This is an intentional safety
+improvement; legacy HTTP202 and payload shapes remain compatible. Optional
+`delivery.idempotency_key` adds cross-request enqueue deduplication, optional
+source adds the SIP proof gate, and optional deadline allows bounded transient
+retries/expiry. Without a key, separate HTTP requests are separate jobs: their
+individual checkpoints do not deduplicate those different requests. Existing
+legacy jobs without source/deadline do not acquire an invented lifetime or a new
+transient retry policy.
+
+Worker recipient diagnostics now use `reportMany` → `enqueueEvents`: one capacity
+count, one transaction and reused INSERT per outcome batch (up to500 recipients).
+This applies to accepted/failure, unknown, expired and ended paths. Individual
+`report` remains a synchronous durable one-event adapter for other callers; no
+in-memory deferred capture was introduced. The outbox limit stays10000, partial
+capacity admits the first fitting facts and counts every dropped fact. A failed
+batch insert rolls back the whole capture; secondary diagnostics failure cannot
+replay a completed provider submission.
+
+Checkpoint health is process-local for this single-process service. A failure
+has an episode number, monotonic failure revision and timestamp. Recovery needs
+a full claim/result write cycle started after the latest failure; a lone claim,
+read-only terminal replay, cached handle or older in-flight success cannot clear
+it. Health exposes this evidence under delivery.checkpoint. Actual intermittent
+write failures may still change ready/degraded; there is no artificial smoothing
+that hides a new failure. This reports worker checkpoint evidence, not proof that
+every SQL path is healthy or a distributed database availability oracle.
+
+Enqueue failures log safe machine causes and an error hash alongside the fixed
+code. They never log raw exception text, broker config, recipient tokens or body.
+Tests resolve source paths from `__dirname` and may run from another working
+directory when passed their explicit file paths.

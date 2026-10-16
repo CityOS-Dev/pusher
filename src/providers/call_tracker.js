@@ -2,12 +2,16 @@
 const { getStore, fingerprint } = require('../db/delivery')
 const TRACKER_URL = process.env.TRACKER_URL || 'http://127.0.0.1:3001/api/calls'
 const KEYS = new Set('user_id user_id_namespace token_hash token_tail error_code error_type http_status retryable category error_hash call_id job_id attempt_index entry_index outcome reason_code'.split(' '))
-function report(callId, stage, meta = {}) {
-  if (!callId) return
+function event(callId, stage, meta = {}) {
   const safe = Object.fromEntries(Object.entries(meta).filter(([key, value]) => KEYS.has(key) && (value == null || typeof value === 'boolean' || typeof value === 'number' && Number.isFinite(value) || typeof value === 'string' && value.length <= 128 && /^[A-Za-z0-9_.:+() /-]*$/.test(value) && !value.includes('://'))))
   const event_id = fingerprint([callId, stage, safe.job_id, safe.attempt_index, safe.entry_index])
-  getStore().enqueueEvent({ callId, source:'pusher', stage, ts:Date.now(), meta:{ ...safe, diagnostics_version:2, ts_unit:'ms', diagnostic_principal:'server:pusher', device_instance_id:'pusher-local', event_id } })
+  return { callId, source:'pusher', stage, ts:Date.now(), meta:{ ...safe, diagnostics_version:2, ts_unit:'ms', diagnostic_principal:'server:pusher', device_instance_id:'pusher-local', event_id } }
 }
+function reportMany(facts) {
+  const events = facts.filter(fact => fact.callId).map(fact => event(fact.callId, fact.stage, fact.meta))
+  if (events.length) return getStore().enqueueEvents(events)
+}
+function report(callId, stage, meta = {}) { return reportMany([{ callId, stage, meta }]) }
 let draining = false, timer
 async function drain(fetchImpl = fetch) {
   if (draining) return
@@ -43,4 +47,4 @@ async function drain(fetchImpl = fetch) {
 }
 function start() { if (!timer) { timer=setInterval(()=>{drain().catch(()=>{})},250);timer.unref() } }
 function stop() { clearInterval(timer);timer=null }
-module.exports = { report, drain, start, stop }
+module.exports = { report, reportMany, drain, start, stop }

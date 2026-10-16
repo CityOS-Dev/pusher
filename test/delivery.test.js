@@ -58,3 +58,26 @@ test('a failed batch finish rolls back every recipient; subsequent claim cannot 
   assert.deepEqual(store.claimMany('batch', [0, 1]), [])
   db.close()
 })
+
+test('500 diagnostic facts commit together with one capacity check and exact bounded overflow', () => {
+  const sql = [], db = new Database(':memory:', { verbose: query => sql.push(query) })
+  const store = createStore(db, { outboxLimit: 503 })
+  const facts = Array.from({ length: 500 }, (_, i) => ({ event_id: String(i) }))
+  sql.length = 0
+  assert.deepEqual(store.enqueueEvents(facts, 100), { accepted: 500, dropped: 0 })
+  assert.equal(sql.filter(query => query === 'COMMIT').length, 1)
+  assert.equal(sql.filter(query => query.startsWith('SELECT COUNT(*) AS n FROM diagnostic_outbox')).length, 1)
+  assert.deepEqual(store.enqueueEvents(facts.slice(0, 5), 100), { accepted: 3, dropped: 2 })
+  assert.equal(store.health().diagnostic_pending, 503)
+  assert.equal(store.health().counters.find(row => row.key === 'diagnostic_overflow').count, 2)
+  db.close()
+})
+
+test('diagnostic batch storage failure rolls back all inserted facts', () => {
+  const db = new Database(':memory:'), store = createStore(db)
+  db.exec(`CREATE TRIGGER diagnostic_failure BEFORE INSERT ON diagnostic_outbox
+    WHEN json_extract(NEW.event,'$.event_id')='second' BEGIN SELECT RAISE(ABORT,'fixture'); END`)
+  assert.throws(() => store.enqueueEvents([{ event_id: 'first' }, { event_id: 'second' }]), /fixture/)
+  assert.equal(store.health().diagnostic_pending, 0)
+  db.close()
+})

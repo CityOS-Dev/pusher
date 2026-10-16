@@ -1,6 +1,6 @@
 const {test}=require('node:test'),assert=require('node:assert/strict')
 const Fastify=require('fastify'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm')
-function load(file,deps){const module={exports:{}},filename=path.resolve(file);vm.runInNewContext(fs.readFileSync(filename,'utf8'),{module,exports:module.exports,require:key=>deps[key]||(key.startsWith('.')?require(path.resolve(path.dirname(filename),key)):require(key))},{filename});return module.exports}
+function load(file,deps){const module={exports:{}},filename=path.resolve(__dirname,'..',file);vm.runInNewContext(fs.readFileSync(filename,'utf8'),{module,exports:module.exports,require:key=>deps[key]||(key.startsWith('.')?require(path.resolve(path.dirname(filename),key)):require(key))},{filename});return module.exports}
 test('API preserves legacy202 and forwards optional delivery; conflicting key returns409',async()=>{
  const schema=load('src/api/schema.js',{'../../config/apps.config.js':{apps:[{id:'a'}]}})
  const sent=[],app=Fastify({logger:false})
@@ -18,4 +18,21 @@ test('API preserves legacy202 and forwards optional delivery; conflicting key re
   assert.equal(invalid.statusCode,400)
  }
  await app.close()
+})
+
+test('enqueue500 records safe machine cause and fingerprint without the secret exception',async()=>{
+ const marker='PRIVATE_REDIS_PASSWORD',records=[]
+ const schema=load('src/api/schema.js',{'../../config/apps.config.js':{apps:[{id:'a'}]}})
+ const app=Fastify({logger:false})
+ app.addHook('onRequest',(request,reply,done)=>{request.log={error:data=>records.push(data)};done()})
+ const routes=load('src/api/routes.js',{'../queue':{addJob:async()=>{throw Object.assign(Error(marker),{code:'ECONNREFUSED'})}},'./schema':schema,'../db/tokens':{}})
+ await app.register(routes)
+ try{
+  const response=await app.inject({method:'POST',url:'/send',payload:{app_id:'a',priority:'high',recipients:[{token:marker,type:'ios'}],request:{payload:{}}}})
+  assert.equal(response.statusCode,500)
+  assert.equal(records[0].code,'enqueue_failed')
+  assert.equal(records[0].error_code,'ECONNREFUSED')
+  assert.match(records[0].error_hash,/^[a-f0-9]{64}$/)
+  assert.ok(!JSON.stringify(records).includes(marker))
+ }finally{await app.close()}
 })

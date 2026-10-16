@@ -3,7 +3,7 @@ const fs = require('node:fs'), path = require('node:path'), vm = require('node:v
 const Fastify = require('fastify')
 
 async function server(health, getQueueStats) {
-  const filename = path.resolve('src/server.js'), module = { exports: {} }
+  const filename = path.resolve(__dirname, '../src/server.js'), module = { exports: {} }
   const noopPlugin = async () => {}
   const deps = {
     fastify: Fastify, './queue': { queues: {}, getQueueStats },

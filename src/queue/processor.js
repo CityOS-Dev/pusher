@@ -14,7 +14,7 @@ const sipSourceGuard = require('./sip_source_guard')
 const apps = require('../../config/apps.config')
 const { describeFailure, tokenFingerprint } = require('../providers/provider_errors')
 const logger = require('pino')({ level: 'info' })
-let checkpointAvailable = true
+const checkpointState = { available: true, failure_episode: 0, failure_revision: 0, last_failure_ms: null, recovered_at_ms: null }
 function getAppConfig(appId) { return apps.apps.find(app => app.id === appId) }
 function secondary(fn) {
   try { fn() } catch (error) { logger.warn(describeFailure(error), 'Secondary recording failed; delivery will not be repeated') }
@@ -30,12 +30,16 @@ async function storage(operation, job, token) {
     return result
   }
   catch (error) {
-    checkpointAvailable = false
+    if (checkpointState.available) checkpointState.failure_episode++
+    checkpointState.available = false
+    checkpointState.failure_revision++
+    checkpointState.last_failure_ms = Date.now()
     logger.warn(describeFailure(error), 'Checkpoint storage unavailable; provider replay remains fenced')
     return defer(job, token, 'checkpoint_storage_unavailable')
   }
 }
 async function processJob(job, token) {
+  const checkpointRevision = checkpointState.failure_revision
   const { app_id, recipients, request, delivery } = job.data
   const p = request && request.payload
   const callId = p?.call_id || p?.callId || p?.data?.call_id || p?.data?.callId || null
@@ -57,20 +61,24 @@ async function processJob(job, token) {
   if (!lease && !sourceEnded && !expired()) return defer(job, token, 'provider_capacity_unavailable')
   try {
     const claimed = await storage(() => store.claimMany(job.id, recipients.map((_, index) => index)), job, token)
-    if (claimed.length) checkpointAvailable = true
     const entries = claimed.map(index => ({ ...recipients[index], entry_index: index }))
     if (!entries.length) return { success: 0, failures: [], invalidTokens: [] }
     const finish = async outcomes => {
       await storage(() => store.finishMany(job.id, outcomes), job, token)
-      checkpointAvailable = true
+      // A whole durable claim/result cycle, started after the latest failure,
+      // proves recovery. Older in-flight success cannot clear a newer outage.
+      if (checkpointRevision === checkpointState.failure_revision && !checkpointState.available) {
+        checkpointState.available = true
+        checkpointState.recovered_at_ms = Date.now()
+      }
     }
     if (sourceEnded || expired()) {
       const state = sourceEnded ? 'skipped' : 'expired'
       await finish(entries.map(r => ({ index: r.entry_index, state })))
-      if (callId) for (const r of entries) secondary(() => tracker.report(callId, 'push_' + state, {
+      if (callId) secondary(() => tracker.reportMany(entries.map(r => ({ callId, stage: 'push_' + state, meta: {
         ...attempt, user_id: r.id, user_id_namespace: namespace, entry_index: r.entry_index,
         ...tokenFingerprint(r.token), reason_code: sourceEnded ? 'call_ended' : 'expired',
-      }))
+      } }))))
       return { success: 0, failures: [], invalidTokens: [] }
     }
     const provider = appConfig.type === 'ios' ? apnProvider : fcmProvider
@@ -83,10 +91,10 @@ async function processJob(job, token) {
     } catch (error) {
       const cause = describeFailure(error, appConfig.type === 'ios' ? 'apns' : 'fcm')
       await finish(entries.map(r => ({ index: r.entry_index, state: 'unknown' })))
-      for (const r of entries) if (callId) secondary(() => tracker.report(callId, 'provider_unknown', {
+      if (callId) secondary(() => tracker.reportMany(entries.map(r => ({ callId, stage: 'provider_unknown', meta: {
         ...attempt, user_id: r.id, user_id_namespace: namespace, entry_index: r.entry_index,
         ...tokenFingerprint(r.token), ...cause, outcome: 'unknown',
-      }))
+      } }))))
       secondary(() => logError(app_id, 'PROVIDER_UNKNOWN', JSON.stringify({ ...cause, ...attempt })))
       return { success: 0, unknown: entries.length, failures: [], invalidTokens: [] }
     }
@@ -99,17 +107,19 @@ async function processJob(job, token) {
       return { index: r.entry_index, state: failure ? failure.category === 'unknown' ? 'unknown' : eligible ? 'retryable' : 'permanent' : 'accepted', failure }
     })
     await finish(outcomes)
+    const facts = []
     for (const [index, r] of entries.entries()) {
       const f = outcomes[index].failure
       const { token: omitted, ...diagnostic } = f || {}
       const safe = { ...diagnostic, ...tokenFingerprint(r.token), ...attempt, user_id: r.id, user_id_namespace: namespace, entry_index: r.entry_index }
       if (f) secondary(() => logError(app_id, 'SEND_FAILED', JSON.stringify(safe)))
-      if (callId) secondary(() => tracker.report(callId, f?.category === 'unknown' ? 'provider_unknown' : appConfig.type === 'ios' ? f ? 'apns_fail' : 'apns_ok' : f ? 'fcm_fail' : 'fcm_ok', safe))
+      if (callId) facts.push({ callId, stage: f?.category === 'unknown' ? 'provider_unknown' : appConfig.type === 'ios' ? f ? 'apns_fail' : 'apns_ok' : f ? 'fcm_fail' : 'fcm_ok', meta: safe })
     }
+    if (facts.length) secondary(() => tracker.reportMany(facts))
     secondary(() => upsertStats(new Date().toISOString().slice(0, 13) + ':00', app_id, result.success, result.failures.length))
     if (result.invalidTokens.length) secondary(() => addInvalidTokens(result.invalidTokens))
     if (retry) throw new Error('Retry eligible transient recipients only')
     return result
   } finally { lease?.release() }
 }
-module.exports = { getAppConfig, processJob, checkpointHealth: () => ({ available: checkpointAvailable }) }
+module.exports = { getAppConfig, processJob, checkpointHealth: () => ({ ...checkpointState }) }

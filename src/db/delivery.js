@@ -10,7 +10,17 @@ function createStore(db, { outboxLimit = 10000 } = {}) {
     CREATE TABLE IF NOT EXISTS delivery_entries (job_id TEXT NOT NULL, entry_index INTEGER NOT NULL, state TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(job_id,entry_index));
     CREATE TABLE IF NOT EXISTS diagnostic_outbox (id INTEGER PRIMARY KEY, event TEXT NOT NULL, next_at INTEGER NOT NULL, created_at INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE IF NOT EXISTS delivery_counters (key TEXT PRIMARY KEY, count INTEGER NOT NULL DEFAULT 0);`)
-  const bump = key => db.prepare('INSERT INTO delivery_counters VALUES (?,1) ON CONFLICT(key) DO UPDATE SET count=count+1').run(key)
+  const incrementCounter = db.prepare('INSERT INTO delivery_counters VALUES (?,?) ON CONFLICT(key) DO UPDATE SET count=count+excluded.count')
+  const bump = (key, count = 1) => incrementCounter.run(key, count)
+  const outboxCount = db.prepare('SELECT COUNT(*) AS n FROM diagnostic_outbox')
+  const insertEvent = db.prepare('INSERT INTO diagnostic_outbox(event,next_at,created_at) VALUES (?,?,?)')
+  const enqueueEvents = db.transaction((events, now = Date.now()) => {
+    const accepted = Math.min(events.length, Math.max(0, outboxLimit - outboxCount.get().n))
+    for (let i = 0; i < accepted; i++) insertEvent.run(JSON.stringify(events[i]), now, now)
+    const dropped = events.length - accepted
+    if (dropped) bump('diagnostic_overflow', dropped)
+    return { accepted, dropped }
+  })
   const readEntry = db.prepare('SELECT state FROM delivery_entries WHERE job_id=? AND entry_index=?')
   const writeEntry = db.prepare(`INSERT INTO delivery_entries VALUES (?,?,?,?)
     ON CONFLICT(job_id,entry_index) DO UPDATE SET state=excluded.state,updated_at=excluded.updated_at`)
@@ -48,13 +58,8 @@ function createStore(db, { outboxLimit = 10000 } = {}) {
     finishMany,
     claim(id, index, now = Date.now()) { return claimMany(id, [index], now).length === 1 },
     finish(id, index, state) { finishMany(id, [{ index, state }]) },
-    enqueueEvent(event, now = Date.now()) {
-      return db.transaction(() => {
-        if (db.prepare('SELECT COUNT(*) AS n FROM diagnostic_outbox').get().n >= outboxLimit) { bump('diagnostic_overflow'); return false }
-        db.prepare('INSERT INTO diagnostic_outbox(event,next_at,created_at) VALUES (?,?,?)').run(JSON.stringify(event), now, now)
-        return true
-      })()
-    },
+    enqueueEvents,
+    enqueueEvent(event, now = Date.now()) { return enqueueEvents([event], now).accepted === 1 },
     events(now = Date.now()) { return db.prepare('SELECT * FROM diagnostic_outbox WHERE next_at<=? ORDER BY id LIMIT 2').all(now).map(r => ({ ...r, event: JSON.parse(r.event) })) },
     deleteEvent(id) { db.prepare('DELETE FROM diagnostic_outbox WHERE id=?').run(id) },
     retryEvent(id, at) { db.prepare('UPDATE diagnostic_outbox SET next_at=?,attempts=attempts+1 WHERE id=?').run(at, id) },

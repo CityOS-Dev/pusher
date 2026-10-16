@@ -3,7 +3,7 @@ const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm')
 const Database=require('better-sqlite3'),delivery=require('../src/db/delivery')
 test('500 recipient diagnostics persist immediately; network drain bounded at two; lost ACK retries same event',async()=>{
  const store=delivery.createStore(new Database(':memory:'))
- const filename=path.resolve('src/providers/call_tracker.js'),module={exports:{}}
+ const filename=path.resolve(__dirname, '../src/providers/call_tracker.js'),module={exports:{}}
  vm.runInNewContext(fs.readFileSync(filename,'utf8'),{module,exports:module.exports,process:{env:{}},Date,Promise,Set,AbortSignal,setInterval,clearInterval,require:k=>k==='../db/delivery'?{...delivery,getStore:()=>store}:require(k)},{filename})
  const tracker=module.exports
  for(let i=0;i<500;i++) tracker.report('call','apns_ok',{job_id:'j',attempt_index:1,entry_index:i,user_id:i+1})
@@ -17,7 +17,7 @@ test('500 recipient diagnostics persist immediately; network drain bounded at tw
 })
 test('diagnostic deletion requires version and exact installation receipt',async()=>{
  const store=delivery.createStore(new Database(':memory:'))
- const filename=path.resolve('src/providers/call_tracker.js'),module={exports:{}}
+ const filename=path.resolve(__dirname, '../src/providers/call_tracker.js'),module={exports:{}}
  vm.runInNewContext(fs.readFileSync(filename,'utf8'),{module,exports:module.exports,process:{env:{}},Date,Promise,Set,AbortSignal,setInterval,clearInterval,require:k=>k==='../db/delivery'?{...delivery,getStore:()=>store}:require(k)},{filename})
  const tracker=module.exports
  tracker.report('call','apns_ok',{job_id:'j',attempt_index:1,entry_index:0,user_id:1})
@@ -33,7 +33,7 @@ test('diagnostic deletion requires version and exact installation receipt',async
 
 test('acknowledged backlog schedules another bounded batch without a fixed quarter-second gap', async () => {
  const store=delivery.createStore(new Database(':memory:'))
- const filename=path.resolve('src/providers/call_tracker.js'),module={exports:{}},scheduled=[]
+ const filename=path.resolve(__dirname, '../src/providers/call_tracker.js'),module={exports:{}},scheduled=[]
  const receipt=async(url,options)=>{
   const b=JSON.parse(options.body)
   return {ok:true,json:async()=>({ok:true,receipt:{persisted:true,diagnostics_version:2,duplicate:false,
@@ -63,7 +63,7 @@ test('failed SQLite retry cannot release the drain guard while sibling HTTP rema
   db.pragma('query_only=ON')
   try{return retry(...args)}finally{db.pragma('query_only=OFF')}
  }
- const filename=path.resolve('src/providers/call_tracker.js'),module={exports:{}}
+ const filename=path.resolve(__dirname, '../src/providers/call_tracker.js'),module={exports:{}}
  vm.runInNewContext(fs.readFileSync(filename,'utf8'),{module,exports:module.exports,process:{env:{}},Date,Promise,Set,AbortSignal,setInterval,clearInterval,
   require:k=>k==='../db/delivery'?{...delivery,getStore:()=>store}:require(k)},{filename})
  const tracker=module.exports

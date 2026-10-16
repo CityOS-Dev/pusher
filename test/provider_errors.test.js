@@ -65,7 +65,7 @@ test('APNs releases its provider when send throws and retains the original failu
 function processor(provider, records, logs, events) {
   return load('src/queue/processor.js', {
     '../providers/apn': provider, '../providers/fcm': provider,
-    '../providers/call_tracker': { report: async (...args) => events.push(args) },
+    '../providers/call_tracker': { reportMany: facts => { for (const f of facts) events.push([f.callId, f.stage, f.meta]) } },
     '../db/stats': { upsertStats() {} },
     '../db/delivery': { getStore: () => ({ claimMany: (id, indexes) => indexes, finishMany() {} }) },
     bullmq: { DelayedError: class DelayedError extends Error {} },

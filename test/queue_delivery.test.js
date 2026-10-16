@@ -6,7 +6,7 @@ function setup() {
  class Queue { constructor(name,options){this.name=name;this.options=options} async addBulk(jobs){queued.push(...jobs);return jobs.map(j=>({id:j.opts.jobId}))} }
  class Worker { constructor(n,p,o){workerOptions.push(o)} on(){} }
  const deps={bullmq:{Queue,Worker},'./processor':{},'../../config/queue.config':require('../config/queue.config'),pino:()=>({info(){},error(){}}),'../db/delivery':{...delivery,getStore:()=>({reserve(k,f){if(saved.has(k)&&saved.get(k)!==f)throw Object.assign(Error('conflict'),{statusCode:409});saved.set(k,f)}})}}
- const module={exports:{}},filename=path.resolve('src/queue/index.js')
+ const module={exports:{}},filename=path.resolve(__dirname, '../src/queue/index.js')
  vm.runInNewContext(fs.readFileSync(filename,'utf8'),{module,exports:module.exports,require:k=>deps[k]||(k.startsWith('node:')?require(k):require(path.resolve(path.dirname(filename),k))),Date,Promise},{filename})
  return {...module.exports,queued,workerOptions}
 }
