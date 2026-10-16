@@ -192,11 +192,142 @@ attempt_index, SHA256 token_hash and token_tail. SDK message/stack and full toke
 are not copied into new diagnostic rows/logs. The separate operational invalid_tokens
 store retains the token needed for pruning. Historical rows are not purged.
 
-`retryable` classifies the cause; it does not enable an extra retry loop. The existing
-queue/SDK retry schedule is unchanged until a separate call deadline/idempotency
-contract is ready. APN provider resources are shut down in finally; a cleanup error
+`retryable` classifies the cause. Queue processing checkpoints every server-indexed
+recipient in SQLite before retry. Explicit partial transient failures retry only
+when delivery.expires_at_ms was supplied and remains valid; accepted, permanent,
+expired and ambiguous entries are excluded. Provider throws/timeouts remain unknown
+and are not blindly resent. Queue processing makes one SDK call per attempt; the
+standalone dashboard FCM helper retains its existing wrapper policy. APN provider resources are shut down in finally; a cleanup error
 is logged safely and does not turn a successful send into a new delivery retry.
 
 Run local isolated verification with `node --test --test-concurrency=2`.
 The tests load the real provider/processor code and replace external SDK/credential,
 DB and logging boundaries; they never connect to Redis, Firebase or APNs.
+
+
+## Delivery reliability contract (2026-10-16)
+
+POST /api/send retains HTTP202 `{message,jobIds}`. Optional top-level `delivery`
+contains `version:1`, `idempotency_key`, optional `expires_at_ms` and
+`operational_generation`, and optional `source:{kind:"sip",issuer,session_id}`. Keys are app-scoped, request-content conflicts return409,
+and chunks use stable hashed Bull IDs with atomic addBulk. A missing deadline does
+not acquire an invented call lifetime or a new transient retry policy. The15-second
+provider transport budget bounds worker occupancy; a timeout is unknown delivery.
+Source guards, where supplied, are separate from diagnostic call_id and never infer
+control authority from it.
+
+Delivery request fingerprints and per-job recipient tombstones live in the existing
+SQLite database with synchronous=FULL and intentionally remain until an explicit
+retention/archival policy is chosen. Do not purge them with queue cleanup: a later
+replay could resend accepted or ambiguous entries. Monitor database disk growth.
+These checkpoints cannot make provider acceptance and local commit atomic; crash
+after submission therefore reports unknown and prevents an automatic resend.
+
+Statistics/token-log/diagnostic errors cannot cause provider resend. Diagnostics
+use a10000-row SQLite outbox, maximum7-day retention, capped2-request drain and
+immutable source event IDs/timestamps. Overflow/expiry are counted in /health.
+Install monitoring support for loopback pusher v2 receipts before this emitter;
+missing/invalid ACK retains the event. No tokens, passwords or payloads enter the
+diagnostic outbox; operational invalid-token pruning remains separate.
+
+Provider recipient namespace comes only from explicit payload user_id_namespace
+(sb/tenant); absent support stays unknown. Provider acceptance is not phone receipt.
+Configured1000/300-per-minute limits count jobs; workers use concurrency2 each.
+Bull retention ages are seconds (3600/86400), with existing count limits.
+
+Native SIP source delivery uses the installed fixed read-only status RPC. Only
+server-supplied source identity is placed in the job. Broker connection settings
+come from the fixed protected `.config/sip-broker.json` (host, port, username,
+password, vhost), generated during rollout from the owning server configuration;
+never put them in jobs/logs or accept a caller URL. Status responses require the
+matching nonce/correlation, issuer, complete marker and stable-cli-status-v1 proof.
+At most2 source queries run concurrently with a1500ms operation budget. Ended
+sources become skipped; unknown sources defer2seconds before any recipient claim,
+using Bull's manual delayed state without spending provider failure attempts.
+Existing jobs without source identity skip only the SIP RPC gate; they still receive durable recipient checkpoints. An explicit expired
+deadline suppresses delivery immediately, even when the source query is unavailable.
+
+
+## Review hardening (2026-10-16)
+
+The delivery store shares the existing `db/index.js` connection, which already
+uses WAL. Keep `synchronous=FULL`. `claimMany` and `finishMany` commit a recipient
+batch atomically before and after provider I/O; prepared statements are reused.
+No transaction spans an SDK request. Per-recipient SQL remains intentional; this
+reduces checkpoint commits, not every diagnostic/statistics write in a job.
+
+Runtime checkpoint initialization/read/write failure defers the Bull job for two
+seconds with its lock token and `DelayedError`, without consuming provider retry
+attempts or bypassing durable claims. A failed post-send commit leaves in-flight
+entries ambiguous; recovery never sends them again. `/health` returns503 when
+checkpoint writes are known unavailable or the storage read itself fails. A
+cached handle or terminal-tombstone read cannot claim write recovery. Startup
+failure of the mandatory SQLite database remains fail-closed under PM2; do not
+replace it with an empty database or an in-memory fallback.
+
+APNs/FCM public send APIs do not accept a general AbortSignal. The15-second
+budget therefore reports unknown; it does not claim cancellation. At most four
+SDK operations can remain outstanding (two workers per queue). A timed-out SDK
+keeps its capacity lease until the real promise settles, including provider
+cleanup. Saturation defers before recipient claim. `/health.provider_operations`
+exposes pending/limit/saturated; saturation alone can also mean ordinary busy
+workers, not a proven provider outage.
+
+The fixed broker file must be a regular non-symlink, private0600 file in a
+private0700 directory, owned by root or the process UID. Deployment generates
+`.config/sip-broker.json` atomically from the installed core's **root config.php**:
+`rabbitmq.host/port/user/password` become `host/port/username/password`, vhost `/`.
+The staged `.config` directory may link to that protected live directory; the
+credential file itself may not be a symlink. Only a validated successful read is
+cached for the process lifetime. Restart the pusher to use rotated credentials;
+failed reads are not cached. Each status query opens its own bounded connection,
+so a later delayed attempt reconnects after an outage. Never put broker URLs or
+credentials into a job, log, shell argument or source commit.
+
+Healthy diagnostic backlog schedules its next two-event batch on the next event
+loop turn, without a fixed250ms gap. Failed ACKs retain per-row backoff and the
+regular scheduler. All sibling operations settle before releasing the drain
+guard, even if SQLite disposition fails. Shutdown flush is additionally bounded;
+unacknowledged rows remain durable. No manual replay or deletion is required.
+
+Diagnostic machine causes are allowlisted. Unknown code/reason text is hashed;
+operational token-store write failures log only token fingerprints. Full tokens
+remain in the operational invalid-token table because pruning needs them, never
+in these new error logs. Existing tombstone retention remains unchanged: choose
+an explicit safe archival policy before deleting accepted/unknown checkpoints.
+
+
+## Second review clarifications (2026-10-16)
+
+All queued jobs, including legacy jobs with **no delivery object**, receive
+per-job/per-recipient checkpoints unconditionally. This is an intentional safety
+improvement; legacy HTTP202 and payload shapes remain compatible. Optional
+`delivery.idempotency_key` adds cross-request enqueue deduplication, optional
+source adds the SIP proof gate, and optional deadline allows bounded transient
+retries/expiry. Without a key, separate HTTP requests are separate jobs: their
+individual checkpoints do not deduplicate those different requests. Existing
+legacy jobs without source/deadline do not acquire an invented lifetime or a new
+transient retry policy.
+
+Worker recipient diagnostics now use `reportMany` → `enqueueEvents`: one capacity
+count, one transaction and reused INSERT per outcome batch (up to500 recipients).
+This applies to accepted/failure, unknown, expired and ended paths. Individual
+`report` remains a synchronous durable one-event adapter for other callers; no
+in-memory deferred capture was introduced. The outbox limit stays10000, partial
+capacity admits the first fitting facts and counts every dropped fact. A failed
+batch insert rolls back the whole capture; secondary diagnostics failure cannot
+replay a completed provider submission.
+
+Checkpoint health is process-local for this single-process service. A failure
+has an episode number, monotonic failure revision and timestamp. Recovery needs
+a full claim/result write cycle started after the latest failure; a lone claim,
+read-only terminal replay, cached handle or older in-flight success cannot clear
+it. Health exposes this evidence under delivery.checkpoint. Actual intermittent
+write failures may still change ready/degraded; there is no artificial smoothing
+that hides a new failure. This reports worker checkpoint evidence, not proof that
+every SQL path is healthy or a distributed database availability oracle.
+
+Enqueue failures log safe machine causes and an error hash alongside the fixed
+code. They never log raw exception text, broker config, recipient tokens or body.
+Tests resolve source paths from `__dirname` and may run from another working
+directory when passed their explicit file paths.

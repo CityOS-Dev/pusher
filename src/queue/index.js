@@ -2,6 +2,9 @@ const { describeFailure } = require('../providers/provider_errors')
 // src/queue/index.js
 const { Queue, Worker } = require('bullmq')
 const { processJob } = require('./processor')
+const { getStore, fingerprint, jobId } = require('../db/delivery')
+const crypto = require('node:crypto')
+const workerState = new Map()
 const queueConfig = require('../../config/queue.config')
 const pino = require('pino')
 
@@ -72,31 +75,48 @@ async function startWorker() {
   for (const queueName of queueNames) {
     const worker = new Worker(
       queueName,
-      processJob,
+      async (job,token) => {
+        try { return await processJob(job,token) }
+        finally { const state=workerState.get(queueName);if(state)delete state.active_jobs[job.id] }
+      },
       {
         connection,
-        concurrency: 5,
+        concurrency: 2,
+        limiter: { max: Object.values(queueConfig.queues).find(q => q.name === queueName).rateLimit.limit, duration: Object.values(queueConfig.queues).find(q => q.name === queueName).rateLimit.interval },
         prefix: queueConfig.redis.prefix,
       },
     )
 
+    workerState.set(queueName, { ready:false, last_completed_at:null, last_failed_at:null, last_error_at:null, active_jobs:{} })
+    worker.on('ready', () => { workerState.get(queueName).ready = true })
+    worker.on('closed', () => { workerState.get(queueName).ready = false })
     worker.on('completed', (job) => {
+      workerState.get(queueName).last_completed_at = Date.now()
+      delete workerState.get(queueName).active_jobs[job.id]
       logger.info({ jobId: job.id, queue: queueName }, 'Job completed')
     })
 
     worker.on('failed', (job, error) => {
+      workerState.get(queueName).last_failed_at = Date.now()
+      if (job) delete workerState.get(queueName).active_jobs[job.id]
       logger.error({ jobId: job?.id, ...describeFailure(error), queue: queueName }, 'Job failed')
     })
 
     worker.on('error', (error) => {
+      workerState.get(queueName).last_error_at = Date.now()
       logger.error({ ...describeFailure(error), queue: queueName }, 'Worker error')
     })
 
+    worker.on('stalled', (id) => {
+      delete workerState.get(queueName).active_jobs[id]
+      workerState.get(queueName).last_stalled_at = Date.now()
+    })
     worker.on('waiting', (job) => {
       logger.info({ jobId: job.id, queue: queueName }, 'Job waiting')
     })
 
     worker.on('active', (job) => {
+      workerState.get(queueName).active_jobs[job.id] = Date.now()
       logger.info({ jobId: job.id, queue: queueName }, 'Job active')
     })
 
@@ -120,26 +140,17 @@ async function addJob(priority, data) {
     })
   }
 
-  const jobIds = []
-
-  for (const chunk of chunks) {
-    try {
-      const job = await queue.add('send', chunk, {
-        priority: priority === 'high' ? 10 : 5,
-      })
-      logger.info({ jobId: job.id }, 'Job added to queue')
-      jobIds.push(job.id)
-    } catch (error) {
-      logger.error({ error }, 'Failed to add job to queue')
-      throw error
-    }
-  }
-
-  logger.info({ jobIds, count: jobIds.length }, 'Jobs added successfully')
-  return jobIds
+  const key = data.delivery ? fingerprint([data.app_id, data.delivery.idempotency_key]) : crypto.randomUUID()
+  if (data.delivery) getStore().reserve(key, fingerprint({ priority, ...data }))
+  const jobs = await queue.addBulk(chunks.map((chunk, index) => ({ name:'send', data:chunk, opts:{ jobId:jobId(key,index), priority:priority === 'high' ? 10:5 } })))
+  return jobs.map(job => String(job.id))
 }
 
 async function getQueueStats(queueName) {
+  const { sendWithin } = require('./provider_deadline')
+  return sendWithin(() => readQueueStats(queueName),1800).catch(() => ({error:'queue_unavailable',worker:{ready:false}}))
+}
+async function readQueueStats(queueName) {
   const queue = queues[queueName]
   if (!queue) return null
 
@@ -149,15 +160,22 @@ async function getQueueStats(queueName) {
     completed: await queue.getCompletedCount(),
     failed: await queue.getFailedCount(),
     delayed: await queue.getDelayedCount(),
+    worker: workerState.get(queue.name) || { ready:false },
+    policy: { limiter: queueConfig.queues[queueName].rateLimit, concurrency:2 },
+    oldest_waiting_age_ms: await oldestAge(queue),
   }
 }
 
+async function oldestAge(queue) {
+  const jobs = await queue.getJobs(['waiting','prioritized'], 0, 0, true)
+  return jobs.length ? Math.max(0,Date.now()-jobs[0].timestamp):null
+}
 async function closeQueues() {
-  await queues.high.close()
-  await queues.standard.close()
   for (const worker of workers) {
     await worker.close()
   }
+  await queues.high.close()
+  await queues.standard.close()
   logger.info('Queues and workers closed')
 }
 

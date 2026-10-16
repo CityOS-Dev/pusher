@@ -1,0 +1,38 @@
+const {test}=require('node:test'),assert=require('node:assert/strict')
+const Fastify=require('fastify'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm')
+function load(file,deps){const module={exports:{}},filename=path.resolve(__dirname,'..',file);vm.runInNewContext(fs.readFileSync(filename,'utf8'),{module,exports:module.exports,require:key=>deps[key]||(key.startsWith('.')?require(path.resolve(path.dirname(filename),key)):require(key))},{filename});return module.exports}
+test('API preserves legacy202 and forwards optional delivery; conflicting key returns409',async()=>{
+ const schema=load('src/api/schema.js',{'../../config/apps.config.js':{apps:[{id:'a'}]}})
+ const sent=[],app=Fastify({logger:false})
+ const routes=load('src/api/routes.js',{'../queue':{addJob:async(p,data)=>{sent.push(data);if(data.delivery?.idempotency_key==='conflict')throw Object.assign(Error('conflict'),{statusCode:409});return ['job']}},'./schema':schema,'../db/tokens':{}})
+ await app.register(routes)
+ const body={app_id:'a',priority:'high',recipients:[{token:'fake',type:'ios'}],request:{payload:{}}}
+ const first=await app.inject({method:'POST',url:'/send',payload:body})
+ assert.equal(first.statusCode,202);assert.deepEqual(first.json(),{message:'Push notifications queued',jobIds:['job']})
+ const second=await app.inject({method:'POST',url:'/send',payload:{...body,delivery:{version:1,idempotency_key:'key'}}})
+ assert.equal(second.statusCode,202);assert.equal(sent[1].delivery.idempotency_key,'key')
+ const conflict=await app.inject({method:'POST',url:'/send',payload:{...body,delivery:{version:1,idempotency_key:'conflict'}}})
+ assert.equal(conflict.statusCode,409)
+ for(const ending of ['\n','\r','\u2028','\u2029']){
+  const invalid=await app.inject({method:'POST',url:'/send',payload:{...body,delivery:{version:1,idempotency_key:'key',source:{kind:'sip',issuer:'asterisk:fixture'+ending,session_id:'123.4'}}}})
+  assert.equal(invalid.statusCode,400)
+ }
+ await app.close()
+})
+
+test('enqueue500 records safe machine cause and fingerprint without the secret exception',async()=>{
+ const marker='PRIVATE_REDIS_PASSWORD',records=[]
+ const schema=load('src/api/schema.js',{'../../config/apps.config.js':{apps:[{id:'a'}]}})
+ const app=Fastify({logger:false})
+ app.addHook('onRequest',(request,reply,done)=>{request.log={error:data=>records.push(data)};done()})
+ const routes=load('src/api/routes.js',{'../queue':{addJob:async()=>{throw Object.assign(Error(marker),{code:'ECONNREFUSED'})}},'./schema':schema,'../db/tokens':{}})
+ await app.register(routes)
+ try{
+  const response=await app.inject({method:'POST',url:'/send',payload:{app_id:'a',priority:'high',recipients:[{token:marker,type:'ios'}],request:{payload:{}}}})
+  assert.equal(response.statusCode,500)
+  assert.equal(records[0].code,'enqueue_failed')
+  assert.equal(records[0].error_code,'ECONNREFUSED')
+  assert.match(records[0].error_hash,/^[a-f0-9]{64}$/)
+  assert.ok(!JSON.stringify(records).includes(marker))
+ }finally{await app.close()}
+})

@@ -2,6 +2,7 @@
 const { addJob } = require('../queue')
 const { sendSchema } = require('./schema')
 const { getInvalidTokens, getInvalidTokenCount, deleteInvalidTokens } = require('../db/tokens')
+const { describeFailure } = require('../providers/provider_errors')
 
 async function routes(fastify, options) {
   // GET /invalid-tokens - List invalid tokens (public, for external consumers)
@@ -61,13 +62,14 @@ async function routes(fastify, options) {
       },
     },
   }, async (request, reply) => {
-    const { app_id, priority, recipients, request: req } = request.body
+    const { app_id, priority, recipients, request: req, delivery } = request.body
 
     try {
       const jobIds = await addJob(priority, {
         app_id,
         recipients,
         request: req,
+        ...(delivery ? { delivery } : {}),
       })
 
       return reply.code(202).send({
@@ -75,7 +77,8 @@ async function routes(fastify, options) {
         jobIds,
       })
     } catch (error) {
-      request.log.error(error)
+      request.log.error({ code: error.statusCode === 409 ? 'idempotency_conflict':'enqueue_failed', ...describeFailure(error) })
+      if (error.statusCode === 409) return reply.code(409).send({ error:'Idempotency key conflicts with existing request' })
       return reply.code(500).send({
         error: 'Failed to queue push notifications',
       })

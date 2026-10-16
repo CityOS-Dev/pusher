@@ -1,3 +1,4 @@
+const { describeFailure } = require('../providers/provider_errors')
 // src/db/errors.js
 const db = require('./index')
 const logger = require('pino')({ level: 'info' })
@@ -12,7 +13,7 @@ function logError(appId, errorType, message) {
     const result = stmt.run(appId, errorType, message)
     return result.lastInsertRowid
   } catch (error) {
-    logger.error({ error, appId }, 'Failed to log error')
+    logger.error({ ...describeFailure(error), appId }, 'Failed to log error')
     throw error
   }
 }
@@ -45,7 +46,7 @@ function getErrors(appId = null, limit = 100, offset = 0) {
 
     return stmt.all(...params)
   } catch (error) {
-    logger.error({ error }, 'Failed to get errors')
+    logger.error(describeFailure(error), 'Failed to get errors')
     throw error
   }
 }
@@ -64,7 +65,7 @@ function getErrorCount(appId = null) {
 
     return stmt.get(...params).count
   } catch (error) {
-    logger.error({ error }, 'Failed to get error count')
+    logger.error(describeFailure(error), 'Failed to get error count')
     throw error
   }
 }

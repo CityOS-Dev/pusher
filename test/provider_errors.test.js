@@ -65,8 +65,10 @@ test('APNs releases its provider when send throws and retains the original failu
 function processor(provider, records, logs, events) {
   return load('src/queue/processor.js', {
     '../providers/apn': provider, '../providers/fcm': provider,
-    '../providers/call_tracker': { report: async (...args) => events.push(args) },
+    '../providers/call_tracker': { reportMany: facts => { for (const f of facts) events.push([f.callId, f.stage, f.meta]) } },
     '../db/stats': { upsertStats() {} },
+    '../db/delivery': { getStore: () => ({ claimMany: (id, indexes) => indexes, finishMany() {} }) },
+    bullmq: { DelayedError: class DelayedError extends Error {} },
     '../db/errors': { logError: (...args) => logs.push(args) },
     '../db/tokens': { addInvalidTokens() {} },
     '../../config/apps.config': { apps: [config] }, pino: logger(records),
@@ -107,7 +109,7 @@ test('a thrown provider failure includes the exact token fingerprint in its call
   const events = []
   const error = Object.assign(new Error('private detail'), { code: 'ECONNRESET' })
   const provider = { send: async () => { throw error } }
-  await assert.rejects(processor(provider, [], [], events).processJob(job([{ id: '4251', token: 'fake-throw-token' }])), e => e === error)
+  await processor(provider, [], [], events).processJob(job([{ id: '4251', token: 'fake-throw-token' }]))
   assert.equal(events[0][2].token_hash, crypto.createHash('sha256').update('fake-throw-token').digest('hex'))
 })
 
@@ -134,4 +136,40 @@ test('FCM recipient failures retain SDK codes and suppress private messages from
   assert.equal(result.failures[0].error_code, 'messaging/server-unavailable')
   assert.equal(result.failures[0].retryable, true)
   assert.ok(!JSON.stringify(result.failures).includes(marker))
+})
+test('APNs missing token outcome is unknown rather than accepted',async()=>{
+ const {provider}=apns({sent:[],failed:[]})
+ const result=await provider.send([{id:'x',token:'missing'}],{payload:{}},config)
+ assert.equal(result.failures[0].category,'unknown')
+})
+test('FCM missing recipient result is unknown rather than accepted', async()=>{
+ const provider=load('src/providers/fcm.js',{
+ 'firebase-admin':{credential:{cert:()=>({})},initializeApp:()=>({messaging:()=>({sendEachForMulticast:async()=>({successCount:0,responses:[]})})})},
+ fs:{existsSync:()=>true,readFileSync:()=>'{}'},path:{resolve:v=>v},pino:logger([])})
+ const result=await provider.send([{id:'x',token:'missing',entry_index:2}],{payload:{}},{id:'fake',serviceAccount:'fake'})
+ assert.equal(result.failures[0].category,'unknown');assert.equal(result.failures[0].entry_index,2)
+})
+
+test('untrusted machine-code fields cannot smuggle credentials into diagnostic logs', () => {
+  const { describeFailure } = require('../src/providers/provider_errors')
+  const marker = 'PRIVATE_CREDENTIAL_IN_CODE'
+  for (const error of [{ code: marker, message: marker }, { response: { reason: marker } }]) {
+    const safe = describeFailure(error)
+    assert.equal(safe.error_code, 'UNKNOWN_ERROR')
+    assert.ok(!JSON.stringify(safe).includes(marker))
+  }
+  assert.equal(describeFailure({ code: 'SQLITE_FULL' }).error_code, 'SQLITE_FULL')
+})
+
+test('invalid-token batch database failure logs a fingerprint instead of the operational token', () => {
+  const marker = 'PRIVATE_TOKEN_SQLITE_FAILURE', records = []
+  const db = {
+    prepare: () => ({ run: () => { throw Object.assign(Error(marker), { code: 'SQLITE_FULL' }) } }),
+    transaction: fn => fn,
+  }
+  const tokens = load('src/db/tokens.js', { './index': db, pino: logger(records) })
+  tokens.addInvalidTokens([{ external_id: '4251', token: marker, app_id: 'fixture', type: 'ios', reason: 'Unregistered' }])
+  assert.ok(records.length)
+  assert.ok(!JSON.stringify(records).includes(marker))
+  assert.equal(records[0][0].token_hash, crypto.createHash('sha256').update(marker).digest('hex'))
 })

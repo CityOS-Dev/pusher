@@ -60,11 +60,17 @@ async function send(recipients, request, appConfig) {
 
     // Attribute each response to its token entry, not an optional/shared id.
     const failedByToken = new Map(result.failed.map(f => [f.device, f]))
+    const accepted = new Set(result.sent.map(s=>s.device))
     for (const recipient of recipients) {
       const failed = failedByToken.get(recipient.token)
-      if (!failed) continue
+      if (!failed && accepted.has(recipient.token)) continue
+      if (!failed) {
+        failures.push({id:recipient.id??null,token:recipient.token,entry_index:recipient.entry_index,error_code:'MISSING_PROVIDER_RESULT',category:'unknown',retryable:false})
+        continue
+      }
       failures.push({
         id: recipient.id ?? null,
+        entry_index: recipient.entry_index,
         token: recipient.token,
         ...describeFailure(failed, 'apns'),
       })

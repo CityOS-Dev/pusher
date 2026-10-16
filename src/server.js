@@ -1,12 +1,17 @@
 // src/server.js
 const Fastify = require('fastify')
-const { createQueues, startWorker, closeQueues, queues } = require('./queue')
+const { createQueues, startWorker, closeQueues, getQueueStats, queues } = require('./queue')
+const { checkpointHealth } = require('./queue/processor')
+const { providerBudget, sendWithin } = require('./queue/provider_deadline')
+const { describeFailure } = require('./providers/provider_errors')
 const apiRoutes = require('./api/routes')
 const dashboardRoutes = require('./dashboard/routes')
 const { createBullBoard } = require('@bull-board/api')
 const { FastifyAdapter } = require('@bull-board/fastify')
 const { BullMQAdapter } = require('@bull-board/api/bullMQAdapter')
 const config = require('../config')
+const tracker = require('./providers/call_tracker')
+const { getStore } = require('./db/delivery')
 const pino = require('pino')
 
 const logger = pino({
@@ -67,14 +72,20 @@ async function buildServer() {
 
   // Health check endpoint (same as /api/health but without /api prefix)
   fastify.get('/health', async (request, reply) => {
-    const { getQueueStats } = require('./queue')
-    const stats = {
-      high: await getQueueStats('high'),
-      standard: await getQueueStats('standard'),
+    const [high, standard] = await Promise.all([getQueueStats('high'), getQueueStats('standard')])
+    const stats = { high, standard }
+    let delivery
+    try {
+      const checkpoint = checkpointHealth()
+      delivery = { ...getStore().health(), storage_available: checkpoint.available, checkpoint }
     }
-
+    catch { delivery = { storage_available: false } }
+    const ready = delivery.storage_available && Object.values(stats).every(q => q?.worker?.ready)
+    if (!ready) reply.code(503)
     return {
-      status: 'ok',
+      status: ready ? 'ok' : 'degraded',
+      delivery,
+      provider_operations: providerBudget.health(),
       timestamp: new Date().toISOString(),
       queues: stats,
     }
@@ -84,6 +95,9 @@ async function buildServer() {
   const close = async () => {
     logger.info('Shutting down...')
     await closeQueues()
+    tracker.stop()
+    try { await sendWithin(() => tracker.drain(), 1000) }
+    catch (error) { logger.warn(describeFailure(error), 'Diagnostic shutdown flush incomplete; durable rows retained') }
     await fastify.close()
     process.exit(0)
   }
@@ -102,6 +116,7 @@ async function start() {
 
   // Start worker
   await startWorker()
+  tracker.start()
 
   // Build and start server
   const server = await buildServer()

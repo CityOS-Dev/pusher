@@ -15,6 +15,16 @@ const CONFIGURATION = new Set([
   'messaging/mismatched-credential', 'messaging/authentication-error', 'app/invalid-credential',
 ])
 const PAYLOAD = new Set(['BadExpirationDate', 'BadPriority', 'PayloadEmpty', 'PayloadTooLarge', 'messaging/invalid-argument', 'messaging/payload-size-limit-exceeded'])
+const MACHINE_CODES = new Set([
+  ...TRANSIENT, ...INVALID_TOKEN, ...CONFIGURATION, ...PAYLOAD,
+  'BadCollapseId', 'BadMessageId', 'BadPath', 'DuplicateHeaders', 'IdleTimeout',
+  'MethodNotAllowed', 'MissingDeviceToken', 'MissingTopic', 'TooManyProviderTokenUpdates',
+  'Forbidden', 'NotFound', 'UnknownReason', 'MISSING_PROVIDER_RESULT',
+  'messaging/third-party-auth-error', 'messaging/unknown-error',
+  'SQLITE_FULL', 'SQLITE_BUSY', 'SQLITE_IOERR', 'SQLITE_CORRUPT', 'SQLITE_CANTOPEN',
+  'SQLITE_NOTADB', 'SQLITE_PERM', 'SQLITE_READONLY', 'SQLITE_LOCKED', 'SQLITE_CONSTRAINT',
+  'SQLITE_TOOBIG', 'SQLITE_NOMEM', 'SQLITE_ERROR', 'ENOENT', 'EACCES', 'ENOSPC',
+])
 const hash = value => crypto.createHash('sha256').update(String(value)).digest('hex')
 
 function describeFailure(input, provider = 'unknown') {
@@ -23,7 +33,7 @@ function describeFailure(input, provider = 'unknown') {
   const reason = failure.response && failure.response.reason
   const message = typeof error === 'string' ? error : String(error.message || '')
   let code = reason || error.errorInfo?.code || error.code
-  if (typeof code !== 'string' || !/^[A-Za-z0-9_./-]{1,128}$/.test(code)) {
+  if (typeof code !== 'string' || !MACHINE_CODES.has(code)) {
     code = [...TRANSPORT, ...CONFIGURATION].find(c => message.includes(c)) || 'UNKNOWN_ERROR'
   }
   const status = failure.status ?? error.statusCode ?? error.status

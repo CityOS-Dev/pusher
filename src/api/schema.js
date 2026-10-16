@@ -1,12 +1,31 @@
 // src/api/schema.js
 const apps = require('../../config/apps.config.js')
 
+const { ISSUER_PATTERN, SESSION_PATTERN } = require('../queue/source_protocol')
+
 const appIds = apps.apps.map(app => app.id)
 
 const sendSchema = {
   type: 'object',
   required: ['app_id', 'priority', 'recipients', 'request'],
   properties: {
+    delivery: {
+      type: 'object', required: ['version', 'idempotency_key'], additionalProperties: false,
+      properties: {
+        version: { const: 1 },
+        source: {
+          type: 'object', required: ['kind', 'issuer', 'session_id'], additionalProperties: false,
+          properties: {
+            kind: { const: 'sip' },
+            issuer: { type: 'string', pattern: ISSUER_PATTERN },
+            session_id: { type: 'string', pattern: SESSION_PATTERN },
+          },
+        },
+        idempotency_key: { type: 'string', minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9_.:-]+$' },
+        expires_at_ms: { type: 'integer', minimum: 1, maximum: 8640000000000000 },
+        operational_generation: { type: 'string', minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9_.:-]+$' },
+      },
+    },
     app_id: {
       type: 'string',
       enum: appIds,

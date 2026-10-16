@@ -1,3 +1,4 @@
+const { describeFailure } = require('../providers/provider_errors')
 // src/db/stats.js
 const db = require('./index');
 const logger = require('pino')({ level: 'info' });
@@ -14,7 +15,7 @@ function upsertStats(hour, appId, successDelta = 0, failDelta = 0) {
   try {
     stmt.run(hour, appId, successDelta, failDelta, successDelta, failDelta);
   } catch (error) {
-    logger.error({ error, appId }, 'Failed to upsert stats');
+    logger.error({ ...describeFailure(error), appId }, 'Failed to upsert stats');
     throw error;
   }
 }
