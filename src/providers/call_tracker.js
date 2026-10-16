@@ -15,7 +15,9 @@ async function drain(fetchImpl = fetch) {
   try {
     const store = getStore()
     store.expireEvents()
-    await Promise.all(store.events().map(async row => {
+    const rows = store.events()
+    let acknowledged = 0
+    const dispositions = await Promise.allSettled(rows.map(async row => {
       try {
         const { callId, ...body } = row.event
         const res = await fetchImpl(`${TRACKER_URL}/${encodeURIComponent(callId)}/event`, {
@@ -25,9 +27,18 @@ async function drain(fetchImpl = fetch) {
         const receipt = result?.receipt
         if (result?.ok === true && receipt?.diagnostics_version === 2 && receipt.persisted === true && Number.isSafeInteger(receipt.received_at_ms) && typeof receipt.duplicate === 'boolean' && receipt.device_instance_id === body.meta.device_instance_id && receipt.event_id === body.meta.event_id && receipt.call_id === callId && receipt.diagnostic_principal === body.meta.diagnostic_principal) {
           store.deleteEvent(row.id)
+          acknowledged++
         } else store.retryEvent(row.id, Date.now()+Math.min(60000, 1000 * 2**Math.min(row.attempts,6)))
       } catch { store.retryEvent(row.id, Date.now()+Math.min(60000, 1000 * 2**Math.min(row.attempts,6))) }
     }))
+    // A failed local disposition must not release the batch guard while the
+    // other HTTP operation is still running.
+    if (dispositions.some(result => result.status === 'rejected')) throw Error('Diagnostic storage unavailable')
+    // Successful backlog makes progress without an artificial 250ms gap.
+    // Yield between batches; failed ACKs retain normal per-row backoff.
+    if (timer && acknowledged && rows.length === 2) {
+      setImmediate(() => { if (timer) return drain().catch(() => {}) })
+    }
   } finally { draining = false }
 }
 function start() { if (!timer) { timer=setInterval(()=>{drain().catch(()=>{})},250);timer.unref() } }

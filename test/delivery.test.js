@@ -31,3 +31,30 @@ test('diagnostic outbox bounded and retry preserves event identity', () => {
   assert.equal(store.events(101).length, 1)
   assert.equal(store.events(201)[0].event.event_id, 'one')
 })
+
+test('500 recipient checkpoints use two atomic commits and preserve ambiguous recovery', () => {
+  const statements = []
+  const db = new Database(':memory:', { verbose: sql => statements.push(sql) })
+  const store = createStore(db)
+  const indexes = Array.from({ length: 500 }, (_, i) => i)
+  statements.length = 0
+  assert.deepEqual(store.claimMany('batch', indexes), indexes)
+  store.finishMany('batch', indexes.map(index => ({ index, state: 'accepted' })))
+  assert.equal(statements.filter(sql => sql === 'COMMIT').length, 2)
+  assert.deepEqual(store.claimMany('batch', indexes), [])
+  assert.deepEqual(store.claimMany('interrupted', [0, 1]), [0, 1])
+  assert.deepEqual(store.claimMany('interrupted', [0, 1]), [])
+  assert.equal(store.health().counters.find(row => row.key === 'ambiguous_recovery').count, 2)
+  db.close()
+})
+
+test('a failed batch finish rolls back every recipient; subsequent claim cannot resend', () => {
+  const db = new Database(':memory:'), store = createStore(db)
+  store.claimMany('batch', [0, 1])
+  db.exec(`CREATE TRIGGER disk_failure BEFORE UPDATE ON delivery_entries
+    WHEN NEW.entry_index=1 AND NEW.state='accepted' BEGIN SELECT RAISE(ABORT, 'fixture'); END`)
+  assert.throws(() => store.finishMany('batch', [{ index: 0, state: 'accepted' }, { index: 1, state: 'accepted' }]), /fixture/)
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM delivery_entries WHERE state='in_flight'").get().n, 2)
+  assert.deepEqual(store.claimMany('batch', [0, 1]), [])
+  db.close()
+})

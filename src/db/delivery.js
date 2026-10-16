@@ -11,6 +11,31 @@ function createStore(db, { outboxLimit = 10000 } = {}) {
     CREATE TABLE IF NOT EXISTS diagnostic_outbox (id INTEGER PRIMARY KEY, event TEXT NOT NULL, next_at INTEGER NOT NULL, created_at INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE IF NOT EXISTS delivery_counters (key TEXT PRIMARY KEY, count INTEGER NOT NULL DEFAULT 0);`)
   const bump = key => db.prepare('INSERT INTO delivery_counters VALUES (?,1) ON CONFLICT(key) DO UPDATE SET count=count+1').run(key)
+  const readEntry = db.prepare('SELECT state FROM delivery_entries WHERE job_id=? AND entry_index=?')
+  const writeEntry = db.prepare(`INSERT INTO delivery_entries VALUES (?,?,?,?)
+    ON CONFLICT(job_id,entry_index) DO UPDATE SET state=excluded.state,updated_at=excluded.updated_at`)
+  const finishEntry = db.prepare('UPDATE delivery_entries SET state=?,updated_at=? WHERE job_id=? AND entry_index=?')
+  // One durable transaction before submission and one after its result; never
+  // keep a transaction open over provider I/O or weaken FULL durability.
+  const claimMany = db.transaction((id, indexes, now = Date.now()) => {
+    const claimed = []
+    for (const index of indexes) {
+      const row = readEntry.get(String(id), index)
+      if (row && row.state !== 'retryable') {
+        if (row.state === 'in_flight') {
+          finishEntry.run('unknown', now, String(id), index)
+          bump('ambiguous_recovery')
+        }
+        continue
+      }
+      writeEntry.run(String(id), index, 'in_flight', now)
+      claimed.push(index)
+    }
+    return claimed
+  })
+  const finishMany = db.transaction((id, outcomes, now = Date.now()) => {
+    for (const { index, state } of outcomes) finishEntry.run(state, now, String(id), index)
+  })
   return {
     reserve: db.transaction((key, value) => {
       const row = db.prepare('SELECT fingerprint FROM delivery_requests WHERE key=?').get(key)
@@ -19,19 +44,10 @@ function createStore(db, { outboxLimit = 10000 } = {}) {
       db.prepare('INSERT INTO delivery_requests VALUES (?,?,?)').run(key, value, Date.now())
       return true
     }),
-    claim: db.transaction((id, index, now = Date.now()) => {
-      const row = db.prepare('SELECT state FROM delivery_entries WHERE job_id=? AND entry_index=?').get(String(id), index)
-      if (row && row.state !== 'retryable') {
-        if (row.state === 'in_flight') {
-          db.prepare('UPDATE delivery_entries SET state=?,updated_at=? WHERE job_id=? AND entry_index=?').run('unknown', now, String(id), index)
-          bump('ambiguous_recovery')
-        }
-        return false
-      }
-      db.prepare('INSERT INTO delivery_entries VALUES (?,?,?,?) ON CONFLICT(job_id,entry_index) DO UPDATE SET state=excluded.state,updated_at=excluded.updated_at').run(String(id), index, 'in_flight', now)
-      return true
-    }),
-    finish(id, index, state) { db.prepare('UPDATE delivery_entries SET state=?,updated_at=? WHERE job_id=? AND entry_index=?').run(state, Date.now(), String(id), index) },
+    claimMany,
+    finishMany,
+    claim(id, index, now = Date.now()) { return claimMany(id, [index], now).length === 1 },
+    finish(id, index, state) { finishMany(id, [{ index, state }]) },
     enqueueEvent(event, now = Date.now()) {
       return db.transaction(() => {
         if (db.prepare('SELECT COUNT(*) AS n FROM diagnostic_outbox').get().n >= outboxLimit) { bump('diagnostic_overflow'); return false }

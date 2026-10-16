@@ -246,3 +246,52 @@ sources become skipped; unknown sources defer2seconds before any recipient claim
 using Bull's manual delayed state without spending provider failure attempts.
 Existing jobs without source identity retain legacy behavior. An explicit expired
 deadline suppresses delivery immediately, even when the source query is unavailable.
+
+
+## Review hardening (2026-10-16)
+
+The delivery store shares the existing `db/index.js` connection, which already
+uses WAL. Keep `synchronous=FULL`. `claimMany` and `finishMany` commit a recipient
+batch atomically before and after provider I/O; prepared statements are reused.
+No transaction spans an SDK request. Per-recipient SQL remains intentional; this
+reduces checkpoint commits, not every diagnostic/statistics write in a job.
+
+Runtime checkpoint initialization/read/write failure defers the Bull job for two
+seconds with its lock token and `DelayedError`, without consuming provider retry
+attempts or bypassing durable claims. A failed post-send commit leaves in-flight
+entries ambiguous; recovery never sends them again. `/health` returns503 when
+checkpoint writes are known unavailable or the storage read itself fails. A
+cached handle or terminal-tombstone read cannot claim write recovery. Startup
+failure of the mandatory SQLite database remains fail-closed under PM2; do not
+replace it with an empty database or an in-memory fallback.
+
+APNs/FCM public send APIs do not accept a general AbortSignal. The15-second
+budget therefore reports unknown; it does not claim cancellation. At most four
+SDK operations can remain outstanding (two workers per queue). A timed-out SDK
+keeps its capacity lease until the real promise settles, including provider
+cleanup. Saturation defers before recipient claim. `/health.provider_operations`
+exposes pending/limit/saturated; saturation alone can also mean ordinary busy
+workers, not a proven provider outage.
+
+The fixed broker file must be a regular non-symlink, private0600 file in a
+private0700 directory, owned by root or the process UID. Deployment generates
+`.config/sip-broker.json` atomically from the installed core's **root config.php**:
+`rabbitmq.host/port/user/password` become `host/port/username/password`, vhost `/`.
+The staged `.config` directory may link to that protected live directory; the
+credential file itself may not be a symlink. Only a validated successful read is
+cached for the process lifetime. Restart the pusher to use rotated credentials;
+failed reads are not cached. Each status query opens its own bounded connection,
+so a later delayed attempt reconnects after an outage. Never put broker URLs or
+credentials into a job, log, shell argument or source commit.
+
+Healthy diagnostic backlog schedules its next two-event batch on the next event
+loop turn, without a fixed250ms gap. Failed ACKs retain per-row backoff and the
+regular scheduler. All sibling operations settle before releasing the drain
+guard, even if SQLite disposition fails. Shutdown flush is additionally bounded;
+unacknowledged rows remain durable. No manual replay or deletion is required.
+
+Diagnostic machine causes are allowlisted. Unknown code/reason text is hashed;
+operational token-store write failures log only token fingerprints. Full tokens
+remain in the operational invalid-token table because pruning needs them, never
+in these new error logs. Existing tombstone retention remains unchanged: choose
+an explicit safe archival policy before deleting accepted/unknown checkpoints.

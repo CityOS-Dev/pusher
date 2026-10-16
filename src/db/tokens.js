@@ -1,3 +1,4 @@
+const { describeFailure, tokenFingerprint } = require('../providers/provider_errors')
 // src/db/tokens.js
 const db = require('./index')
 const logger = require('pino')({ level: 'info' })
@@ -12,7 +13,7 @@ function addInvalidToken(externalId, token, appId, type, reason) {
     const result = stmt.run(externalId, token, appId, type, reason)
     return result.lastInsertRowid
   } catch (error) {
-    logger.error({ error, appId }, 'Failed to add invalid token')
+    logger.error({ ...describeFailure(error), appId }, 'Failed to add invalid token')
     throw error
   }
 }
@@ -36,7 +37,7 @@ function addInvalidTokens(tokens) {
         )
         results.push(result.lastInsertRowid)
       } catch (error) {
-        logger.error({ error, token: token.token }, 'Failed to add invalid token (batch)')
+        logger.error({ ...describeFailure(error), ...tokenFingerprint(token.token) }, 'Failed to add invalid token (batch)')
       }
     }
     return results
@@ -71,7 +72,7 @@ function getInvalidTokens(appId = null, limit = 100, offset = 0, type = null) {
 
     return stmt.all(...params)
   } catch (error) {
-    logger.error({ error }, 'Failed to get invalid tokens')
+    logger.error(describeFailure(error), 'Failed to get invalid tokens')
     throw error
   }
 }
@@ -94,7 +95,7 @@ function getInvalidTokenCount(appId = null, type = null) {
     const stmt = db.prepare(`SELECT COUNT(*) as count FROM invalid_tokens ${whereClause}`)
     return stmt.get(...params).count
   } catch (error) {
-    logger.error({ error }, 'Failed to get invalid token count')
+    logger.error(describeFailure(error), 'Failed to get invalid token count')
     throw error
   }
 }
@@ -105,7 +106,7 @@ function isTokenInvalid(token) {
     const result = stmt.get(token)
     return result.count > 0
   } catch (error) {
-    logger.error({ error }, 'Failed to check if token is invalid')
+    logger.error(describeFailure(error), 'Failed to check if token is invalid')
     throw error
   }
 }
@@ -140,7 +141,7 @@ function deleteInvalidTokens(ids = [], tokens = []) {
     }
     return deleted
   } catch (error) {
-    logger.error({ error }, 'Failed to delete invalid tokens')
+    logger.error(describeFailure(error), 'Failed to delete invalid tokens')
     throw error
   }
 }
@@ -155,7 +156,7 @@ function clearInvalidTokens(appId = null) {
       return stmt.run().changes
     }
   } catch (error) {
-    logger.error({ error }, 'Failed to clear invalid tokens')
+    logger.error(describeFailure(error), 'Failed to clear invalid tokens')
     throw error
   }
 }

@@ -1,6 +1,6 @@
 const {test}=require('node:test'),assert=require('node:assert/strict')
 const Fastify=require('fastify'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm')
-function load(file,deps){const module={exports:{}},filename=path.resolve(file);vm.runInNewContext(fs.readFileSync(filename,'utf8'),{module,exports:module.exports,require:key=>deps[key]||require(key)},{filename});return module.exports}
+function load(file,deps){const module={exports:{}},filename=path.resolve(file);vm.runInNewContext(fs.readFileSync(filename,'utf8'),{module,exports:module.exports,require:key=>deps[key]||(key.startsWith('.')?require(path.resolve(path.dirname(filename),key)):require(key))},{filename});return module.exports}
 test('API preserves legacy202 and forwards optional delivery; conflicting key returns409',async()=>{
  const schema=load('src/api/schema.js',{'../../config/apps.config.js':{apps:[{id:'a'}]}})
  const sent=[],app=Fastify({logger:false})
@@ -13,5 +13,9 @@ test('API preserves legacy202 and forwards optional delivery; conflicting key re
  assert.equal(second.statusCode,202);assert.equal(sent[1].delivery.idempotency_key,'key')
  const conflict=await app.inject({method:'POST',url:'/send',payload:{...body,delivery:{version:1,idempotency_key:'conflict'}}})
  assert.equal(conflict.statusCode,409)
+ for(const ending of ['\n','\r','\u2028','\u2029']){
+  const invalid=await app.inject({method:'POST',url:'/send',payload:{...body,delivery:{version:1,idempotency_key:'key',source:{kind:'sip',issuer:'asterisk:fixture'+ending,session_id:'123.4'}}}})
+  assert.equal(invalid.statusCode,400)
+ }
  await app.close()
 })

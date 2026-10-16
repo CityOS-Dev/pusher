@@ -67,7 +67,8 @@ function processor(provider, records, logs, events) {
     '../providers/apn': provider, '../providers/fcm': provider,
     '../providers/call_tracker': { report: async (...args) => events.push(args) },
     '../db/stats': { upsertStats() {} },
-    '../db/delivery': { getStore: () => ({ claim: () => true, finish() {} }) },
+    '../db/delivery': { getStore: () => ({ claimMany: (id, indexes) => indexes, finishMany() {} }) },
+    bullmq: { DelayedError: class DelayedError extends Error {} },
     '../db/errors': { logError: (...args) => logs.push(args) },
     '../db/tokens': { addInvalidTokens() {} },
     '../../config/apps.config': { apps: [config] }, pino: logger(records),
@@ -147,4 +148,28 @@ test('FCM missing recipient result is unknown rather than accepted', async()=>{
  fs:{existsSync:()=>true,readFileSync:()=>'{}'},path:{resolve:v=>v},pino:logger([])})
  const result=await provider.send([{id:'x',token:'missing',entry_index:2}],{payload:{}},{id:'fake',serviceAccount:'fake'})
  assert.equal(result.failures[0].category,'unknown');assert.equal(result.failures[0].entry_index,2)
+})
+
+test('untrusted machine-code fields cannot smuggle credentials into diagnostic logs', () => {
+  const { describeFailure } = require('../src/providers/provider_errors')
+  const marker = 'PRIVATE_CREDENTIAL_IN_CODE'
+  for (const error of [{ code: marker, message: marker }, { response: { reason: marker } }]) {
+    const safe = describeFailure(error)
+    assert.equal(safe.error_code, 'UNKNOWN_ERROR')
+    assert.ok(!JSON.stringify(safe).includes(marker))
+  }
+  assert.equal(describeFailure({ code: 'SQLITE_FULL' }).error_code, 'SQLITE_FULL')
+})
+
+test('invalid-token batch database failure logs a fingerprint instead of the operational token', () => {
+  const marker = 'PRIVATE_TOKEN_SQLITE_FAILURE', records = []
+  const db = {
+    prepare: () => ({ run: () => { throw Object.assign(Error(marker), { code: 'SQLITE_FULL' }) } }),
+    transaction: fn => fn,
+  }
+  const tokens = load('src/db/tokens.js', { './index': db, pino: logger(records) })
+  tokens.addInvalidTokens([{ external_id: '4251', token: marker, app_id: 'fixture', type: 'ios', reason: 'Unregistered' }])
+  assert.ok(records.length)
+  assert.ok(!JSON.stringify(records).includes(marker))
+  assert.equal(records[0][0].token_hash, crypto.createHash('sha256').update(marker).digest('hex'))
 })

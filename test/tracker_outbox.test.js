@@ -30,3 +30,54 @@ test('diagnostic deletion requires version and exact installation receipt',async
  await tracker.drain(async()=>({ok:true,json:async()=>({ok:true,receipt})}))
  assert.equal(store.health().diagnostic_pending,0)
 })
+
+test('acknowledged backlog schedules another bounded batch without a fixed quarter-second gap', async () => {
+ const store=delivery.createStore(new Database(':memory:'))
+ const filename=path.resolve('src/providers/call_tracker.js'),module={exports:{}},scheduled=[]
+ const receipt=async(url,options)=>{
+  const b=JSON.parse(options.body)
+  return {ok:true,json:async()=>({ok:true,receipt:{persisted:true,diagnostics_version:2,duplicate:false,
+   received_at_ms:123,call_id:'call',event_id:b.meta.event_id,device_instance_id:b.meta.device_instance_id,diagnostic_principal:b.meta.diagnostic_principal}})}
+ }
+ vm.runInNewContext(fs.readFileSync(filename,'utf8'),{module,exports:module.exports,process:{env:{}},Date,Promise,Set,AbortSignal,
+  setInterval:()=>({unref(){}}),clearInterval(){},setImmediate:fn=>scheduled.push(fn),fetch:receipt,
+  require:k=>k==='../db/delivery'?{...delivery,getStore:()=>store}:require(k)},{filename})
+ const tracker=module.exports
+ for(let i=0;i<5;i++)tracker.report('call','apns_ok',{job_id:'j',attempt_index:1,entry_index:i})
+ tracker.start()
+ await tracker.drain(receipt)
+ assert.equal(store.health().diagnostic_pending,3)
+ assert.equal(scheduled.length,1)
+ await scheduled.shift()()
+ assert.equal(store.health().diagnostic_pending,1)
+ assert.equal(scheduled.length,1)
+ tracker.stop()
+ await scheduled.shift()()
+ assert.equal(store.health().diagnostic_pending,1,'stop prevents scheduled work; durable backlog retained')
+})
+
+test('failed SQLite retry cannot release the drain guard while sibling HTTP remains pending', async () => {
+ const db=new Database(':memory:'),store=delivery.createStore(db),held=[]
+ const retry=store.retryEvent
+ store.retryEvent=(...args)=>{
+  db.pragma('query_only=ON')
+  try{return retry(...args)}finally{db.pragma('query_only=OFF')}
+ }
+ const filename=path.resolve('src/providers/call_tracker.js'),module={exports:{}}
+ vm.runInNewContext(fs.readFileSync(filename,'utf8'),{module,exports:module.exports,process:{env:{}},Date,Promise,Set,AbortSignal,setInterval,clearInterval,
+  require:k=>k==='../db/delivery'?{...delivery,getStore:()=>store}:require(k)},{filename})
+ const tracker=module.exports
+ for(let i=0;i<2;i++)tracker.report('call','apns_ok',{job_id:'j',attempt_index:1,entry_index:i})
+ let started=0
+ const fetch=async()=>{
+  started++
+  if(started===1)return {ok:false}
+  await new Promise(resolve=>held.push(resolve))
+  return {ok:false}
+ }
+ const first=tracker.drain(fetch).catch(()=>{})
+ await new Promise(resolve=>setImmediate(resolve))
+ const second=tracker.drain(fetch).catch(()=>{})
+ try{assert.equal(started,2,'sibling in-flight HTTP keeps the batch guard even after SQLite failure')}
+ finally{held.forEach(resolve=>resolve());await Promise.all([first,second]);db.close()}
+})
