@@ -85,7 +85,7 @@ async function sendMulticastWithRetry(app, message, appId) {
   throw lastError
 }
 
-async function send(recipients, request, appConfig) {
+async function send(recipients, request, appConfig, delivery = {}) {
   const app = getApp(appConfig)
   const tokens = recipients.map(r => r.token)
   const failures = []
@@ -121,20 +121,25 @@ async function send(recipients, request, appConfig) {
   let result
 
   try {
-    result = await sendMulticastWithRetry(app, message, appConfig.id)
+    result = delivery.singleAttempt ? await app.messaging().sendEachForMulticast(message) : await sendMulticastWithRetry(app, message, appConfig.id)
   } catch (error) {
     logger.error({ ...describeFailure(error, 'fcm'), appId: appConfig.id }, 'FCM send failed')
     throw error
   }
 
   // Process responses
-  result.responses.forEach((response, index) => {
-    const recipient = recipients[index]
+  recipients.forEach((recipient, index) => {
+    const response = result.responses?.[index]
+    if (!response || typeof response.success !== 'boolean') {
+      failures.push({id:recipient.id,token:recipient.token,entry_index:recipient.entry_index,error_code:'MISSING_PROVIDER_RESULT',category:'unknown',retryable:false})
+      return
+    }
 
     if (!response.success) {
       const error = response.error
       failures.push({
         id: recipient.id,
+        entry_index: recipient.entry_index,
         token: recipient.token,
         ...describeFailure(error, 'fcm'),
       })
@@ -152,7 +157,7 @@ async function send(recipients, request, appConfig) {
   })
 
   return {
-    success: result.successCount,
+    success: recipients.reduce((count,_,i)=>count+(result.responses?.[i]?.success === true ? 1:0),0),
     failures,
     invalidTokens,
   }

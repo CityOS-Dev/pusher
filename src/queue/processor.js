@@ -1,122 +1,86 @@
-// src/queue/processor.js
 const apnProvider = require('../providers/apn')
 const fcmProvider = require('../providers/fcm')
 const tracker = require('../providers/call_tracker')
 const { upsertStats } = require('../db/stats')
 const { logError } = require('../db/errors')
 const { addInvalidTokens } = require('../db/tokens')
+const { getStore } = require('../db/delivery')
+const { sendWithin } = require('./provider_deadline')
+const sipSourceGuard = require('./sip_source_guard')
 const apps = require('../../config/apps.config')
-const pino = require('pino')
 const { describeFailure, tokenFingerprint } = require('../providers/provider_errors')
-
-const logger = pino({ level: 'info' })
-
-function getAppConfig(appId) {
-  return apps.apps.find(app => app.id === appId)
+const logger = require('pino')({ level: 'info' })
+function getAppConfig(appId) { return apps.apps.find(app => app.id === appId) }
+function secondary(fn) {
+  try { fn() } catch (error) { logger.warn(describeFailure(error), 'Secondary recording failed; delivery will not be repeated') }
 }
-
-async function processJob(job) {
-  const { app_id, recipients, request } = job.data
+async function processJob(job, token) {
+  const { app_id, recipients, request, delivery } = job.data
   const p = request && request.payload
   const callId = p?.call_id || p?.callId || p?.data?.call_id || p?.data?.callId || null
+  const rawNamespace = p?.data?.user_id_namespace || p?.user_id_namespace
+  const namespace = ['sb','tenant'].includes(rawNamespace) ? rawNamespace:null
   const attempt = { call_id: callId, job_id: job.id, attempt_index: (job.attemptsMade || 0) + 1 }
-
-  logger.info({ jobId: job.id, appId: app_id, recipientCount: recipients.length }, 'Processing job')
-
   const appConfig = getAppConfig(app_id)
-
-  if (!appConfig) {
-    throw new Error(`App config not found: ${app_id}`)
+  if (!appConfig || !['ios','android'].includes(appConfig.type)) throw new Error('Invalid app configuration')
+  const store = getStore()
+  const deadline = delivery?.expires_at_ms
+  let sourceEnded = false
+  if (delivery?.source && !(Number.isSafeInteger(deadline) && Date.now() >= deadline)) {
+    const status = await sipSourceGuard.check(delivery.source)
+    if (status === 'unknown') {
+      await job.moveToDelayed(Date.now()+2000,token)
+      const {DelayedError}=require('bullmq')
+      throw new DelayedError()
+    }
+    sourceEnded = status === 'ended'
   }
-
-  let provider
-  if (appConfig.type === 'ios') {
-    provider = apnProvider
-  } else if (appConfig.type === 'android') {
-    provider = fcmProvider
-  } else {
-    throw new Error(`Unknown app type: ${appConfig.type}`)
+  const entries = []
+  for (const [index, rcpt] of recipients.entries()) {
+    const entry_index = index
+    if (!store.claim(job.id, entry_index)) continue
+    if (sourceEnded) {
+      store.finish(job.id,entry_index,'skipped')
+      if(callId) secondary(()=>tracker.report(callId,'push_skipped',{...attempt,user_id:rcpt.id,user_id_namespace:namespace,entry_index,...tokenFingerprint(rcpt.token),reason_code:'call_ended'}))
+    } else if (Number.isSafeInteger(deadline) && Date.now() >= deadline) {
+      store.finish(job.id, entry_index, 'expired')
+      if (callId) secondary(() => tracker.report(callId, 'push_expired', { ...attempt, user_id: rcpt.id, user_id_namespace:namespace, entry_index, ...tokenFingerprint(rcpt.token), reason_code:'expired' }))
+    } else entries.push({ ...rcpt, entry_index })
   }
-
+  if (!entries.length) return { success:0, failures:[], invalidTokens:[] }
+  const provider = appConfig.type === 'ios' ? apnProvider : fcmProvider
+  if (Number.isSafeInteger(deadline) && Date.now() >= deadline) {
+    for (const r of entries) store.finish(job.id,r.entry_index,'expired')
+    return {success:0,failures:[],invalidTokens:[]}
+  }
+  let result
   try {
-    const result = await provider.send(recipients, request, appConfig)
-
-    // Record stats
-    const hour = new Date().toISOString().slice(0, 13) + ':00'
-    upsertStats(hour, app_id, result.success, result.failures.length)
-
-    // Log invalid tokens
-    if (result.invalidTokens.length > 0) {
-      addInvalidTokens(result.invalidTokens)
-      logger.info({ count: result.invalidTokens.length }, 'Invalid tokens logged')
-    }
-
-    // Log individual failures
-    for (const failure of result.failures) {
-      const { token, ...diagnostic } = failure
-      logError(app_id, 'SEND_FAILED', JSON.stringify({ ...diagnostic, ...tokenFingerprint(token), ...attempt }))
-    }
-
-    logger.info({ jobId: job.id, success: result.success, failures: result.failures.length }, 'Job completed')
-
-    // Call tracker: emit per-recipient stage. callId arrives in:
-    //   - request.payload.call_id (iOS, PushNotification.php hik)
-    //   - request.payload.data.call_id (Android, PushNotification.php hik)
-    //   - request.payload.callId / data.callId (camelCase fallback — на случай если
-    //     какой-то источник пришлёт camel-case; SIP-демон до фикса 2026-05-19 так делал)
-    if (callId) {
-      const isIos = appConfig.type === 'ios'
-      const okStage   = isIos ? 'apns_ok'   : 'fcm_ok'
-      const failStage = isIos ? 'apns_fail' : 'fcm_fail'
-      for (const rcpt of recipients) {
-        const fingerprint = tokenFingerprint(rcpt.token)
-        const failureInfo = result.failures.find(f => f.token === rcpt.token && (f.id == null || String(f.id) === String(rcpt.id)))
-        if (failureInfo) {
-          await tracker.report(callId, failStage, {
-            user_id: rcpt.id,
-            ...fingerprint,
-            error: failureInfo.error,
-            error_code: failureInfo.error_code,
-            error_type: failureInfo.error_type,
-            http_status: failureInfo.http_status,
-            retryable: failureInfo.retryable,
-            category: failureInfo.category,
-            error_hash: failureInfo.error_hash,
-            ...attempt,
-          })
-        } else {
-          await tracker.report(callId, okStage, {
-            user_id: rcpt.id,
-            ...fingerprint,
-            ...attempt,
-          })
-        }
-      }
-    }
-
-    return result
+    // Delivery retry belongs to the checkpointed queue; SDK wrapper must not resend an ambiguous request.
+    result = await sendWithin(() => provider.send(entries, request, appConfig, { singleAttempt: true, expires_at_ms: deadline }), Math.max(1,Math.min(15000,Number.isSafeInteger(deadline)?deadline-Date.now():15000)))
   } catch (error) {
     const cause = describeFailure(error, appConfig.type === 'ios' ? 'apns' : 'fcm')
-    logger.error({ ...cause, ...attempt }, 'Job failed')
-    logError(app_id, 'JOB_ERROR', JSON.stringify({ ...cause, ...attempt }))
-
-    if (callId) {
-      const failStage = appConfig.type === 'ios' ? 'apns_fail' : 'fcm_fail'
-      for (const rcpt of recipients) {
-        await tracker.report(callId, failStage, {
-          user_id: rcpt.id,
-          ...tokenFingerprint(rcpt.token),
-          ...cause,
-          ...attempt,
-        })
-      }
+    for (const r of entries) {
+      store.finish(job.id, r.entry_index, 'unknown')
+      if (callId) secondary(() => tracker.report(callId, 'provider_unknown', { ...attempt, user_id:r.id, user_id_namespace:namespace, entry_index:r.entry_index, ...tokenFingerprint(r.token), ...cause, outcome:'unknown' }))
     }
-
-    throw error
+    secondary(() => logError(app_id, 'PROVIDER_UNKNOWN', JSON.stringify({ ...cause, ...attempt })))
+    return { success:0, unknown:entries.length, failures:[], invalidTokens:[] }
   }
+  let retry = false
+  for (const r of entries) {
+    const f = result.failures.find(x => x.entry_index != null ? x.entry_index === r.entry_index : x.token === r.token && (x.id == null || String(x.id) === String(r.id)))
+    const eligible = !!f?.retryable && Number.isSafeInteger(deadline) && Date.now() + 5000 < deadline &&
+      (job.attemptsMade || 0) + 1 < (job.opts?.attempts || 3)
+    store.finish(job.id, r.entry_index, f ? f.category === 'unknown' ? 'unknown' : eligible ? 'retryable' : 'permanent' : 'accepted')
+    retry ||= eligible
+    const { token, ...diagnostic } = f || {}
+    const safe = { ...diagnostic, ...tokenFingerprint(r.token), ...attempt, user_id:r.id, user_id_namespace:namespace, entry_index:r.entry_index }
+    if (f) secondary(() => logError(app_id, 'SEND_FAILED', JSON.stringify(safe)))
+    if (callId) secondary(() => tracker.report(callId, f?.category === 'unknown' ? 'provider_unknown' : appConfig.type === 'ios' ? f ? 'apns_fail':'apns_ok' : f ? 'fcm_fail':'fcm_ok', safe))
+  }
+  secondary(() => upsertStats(new Date().toISOString().slice(0,13)+':00', app_id, result.success, result.failures.length))
+  if (result.invalidTokens.length) secondary(() => addInvalidTokens(result.invalidTokens))
+  if (retry) throw new Error('Retry eligible transient recipients only')
+  return result
 }
-
-module.exports = {
-  getAppConfig,
-  processJob,
-}
+module.exports = { getAppConfig, processJob }

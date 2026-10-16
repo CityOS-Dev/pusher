@@ -192,11 +192,57 @@ attempt_index, SHA256 token_hash and token_tail. SDK message/stack and full toke
 are not copied into new diagnostic rows/logs. The separate operational invalid_tokens
 store retains the token needed for pruning. Historical rows are not purged.
 
-`retryable` classifies the cause; it does not enable an extra retry loop. The existing
-queue/SDK retry schedule is unchanged until a separate call deadline/idempotency
-contract is ready. APN provider resources are shut down in finally; a cleanup error
+`retryable` classifies the cause. Queue processing checkpoints every server-indexed
+recipient in SQLite before retry. Explicit partial transient failures retry only
+when delivery.expires_at_ms was supplied and remains valid; accepted, permanent,
+expired and ambiguous entries are excluded. Provider throws/timeouts remain unknown
+and are not blindly resent. Queue processing makes one SDK call per attempt; the
+standalone dashboard FCM helper retains its existing wrapper policy. APN provider resources are shut down in finally; a cleanup error
 is logged safely and does not turn a successful send into a new delivery retry.
 
 Run local isolated verification with `node --test --test-concurrency=2`.
 The tests load the real provider/processor code and replace external SDK/credential,
 DB and logging boundaries; they never connect to Redis, Firebase or APNs.
+
+
+## Delivery reliability contract (2026-10-16)
+
+POST /api/send retains HTTP202 `{message,jobIds}`. Optional top-level `delivery`
+contains `version:1`, `idempotency_key`, optional `expires_at_ms` and
+`operational_generation`, and optional `source:{kind:"sip",issuer,session_id}`. Keys are app-scoped, request-content conflicts return409,
+and chunks use stable hashed Bull IDs with atomic addBulk. A missing deadline does
+not acquire an invented call lifetime or a new transient retry policy. The15-second
+provider transport budget bounds worker occupancy; a timeout is unknown delivery.
+Source guards, where supplied, are separate from diagnostic call_id and never infer
+control authority from it.
+
+Delivery request fingerprints and per-job recipient tombstones live in the existing
+SQLite database with synchronous=FULL and intentionally remain until an explicit
+retention/archival policy is chosen. Do not purge them with queue cleanup: a later
+replay could resend accepted or ambiguous entries. Monitor database disk growth.
+These checkpoints cannot make provider acceptance and local commit atomic; crash
+after submission therefore reports unknown and prevents an automatic resend.
+
+Statistics/token-log/diagnostic errors cannot cause provider resend. Diagnostics
+use a10000-row SQLite outbox, maximum7-day retention, capped2-request drain and
+immutable source event IDs/timestamps. Overflow/expiry are counted in /health.
+Install monitoring support for loopback pusher v2 receipts before this emitter;
+missing/invalid ACK retains the event. No tokens, passwords or payloads enter the
+diagnostic outbox; operational invalid-token pruning remains separate.
+
+Provider recipient namespace comes only from explicit payload user_id_namespace
+(sb/tenant); absent support stays unknown. Provider acceptance is not phone receipt.
+Configured1000/300-per-minute limits count jobs; workers use concurrency2 each.
+Bull retention ages are seconds (3600/86400), with existing count limits.
+
+Native SIP source delivery uses the installed fixed read-only status RPC. Only
+server-supplied source identity is placed in the job. Broker connection settings
+come from the fixed protected `.config/sip-broker.json` (host, port, username,
+password, vhost), generated during rollout from the owning server configuration;
+never put them in jobs/logs or accept a caller URL. Status responses require the
+matching nonce/correlation, issuer, complete marker and stable-cli-status-v1 proof.
+At most2 source queries run concurrently with a1500ms operation budget. Ended
+sources become skipped; unknown sources defer2seconds before any recipient claim,
+using Bull's manual delayed state without spending provider failure attempts.
+Existing jobs without source identity retain legacy behavior. An explicit expired
+deadline suppresses delivery immediately, even when the source query is unavailable.

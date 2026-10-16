@@ -67,6 +67,7 @@ function processor(provider, records, logs, events) {
     '../providers/apn': provider, '../providers/fcm': provider,
     '../providers/call_tracker': { report: async (...args) => events.push(args) },
     '../db/stats': { upsertStats() {} },
+    '../db/delivery': { getStore: () => ({ claim: () => true, finish() {} }) },
     '../db/errors': { logError: (...args) => logs.push(args) },
     '../db/tokens': { addInvalidTokens() {} },
     '../../config/apps.config': { apps: [config] }, pino: logger(records),
@@ -107,7 +108,7 @@ test('a thrown provider failure includes the exact token fingerprint in its call
   const events = []
   const error = Object.assign(new Error('private detail'), { code: 'ECONNRESET' })
   const provider = { send: async () => { throw error } }
-  await assert.rejects(processor(provider, [], [], events).processJob(job([{ id: '4251', token: 'fake-throw-token' }])), e => e === error)
+  await processor(provider, [], [], events).processJob(job([{ id: '4251', token: 'fake-throw-token' }]))
   assert.equal(events[0][2].token_hash, crypto.createHash('sha256').update('fake-throw-token').digest('hex'))
 })
 
@@ -134,4 +135,16 @@ test('FCM recipient failures retain SDK codes and suppress private messages from
   assert.equal(result.failures[0].error_code, 'messaging/server-unavailable')
   assert.equal(result.failures[0].retryable, true)
   assert.ok(!JSON.stringify(result.failures).includes(marker))
+})
+test('APNs missing token outcome is unknown rather than accepted',async()=>{
+ const {provider}=apns({sent:[],failed:[]})
+ const result=await provider.send([{id:'x',token:'missing'}],{payload:{}},config)
+ assert.equal(result.failures[0].category,'unknown')
+})
+test('FCM missing recipient result is unknown rather than accepted', async()=>{
+ const provider=load('src/providers/fcm.js',{
+ 'firebase-admin':{credential:{cert:()=>({})},initializeApp:()=>({messaging:()=>({sendEachForMulticast:async()=>({successCount:0,responses:[]})})})},
+ fs:{existsSync:()=>true,readFileSync:()=>'{}'},path:{resolve:v=>v},pino:logger([])})
+ const result=await provider.send([{id:'x',token:'missing',entry_index:2}],{payload:{}},{id:'fake',serviceAccount:'fake'})
+ assert.equal(result.failures[0].category,'unknown');assert.equal(result.failures[0].entry_index,2)
 })

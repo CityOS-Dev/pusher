@@ -26,7 +26,7 @@ module.exports = {
   retryAttempts: 3,
   retryDelay: 5000,
   // Job retention settings (remove jobs after completion/failure)
-  // age: milliseconds since job completion, count: max jobs to keep
-  removeOnComplete: { age: 3600000, count: 1000 },  // 1 hour, keep last 1000
-  removeOnFail: { age: 86400000, count: 100 },       // 24 hours, keep last 100
+  // BullMQ age is seconds since completion; limiter counts jobs, not recipients.
+  removeOnComplete: { age: 3600, count: 1000 },  // 1 hour, keep last 1000
+  removeOnFail: { age: 86400, count: 100 },       // 24 hours, keep last 100
 }

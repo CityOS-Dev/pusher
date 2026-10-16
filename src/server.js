@@ -7,6 +7,8 @@ const { createBullBoard } = require('@bull-board/api')
 const { FastifyAdapter } = require('@bull-board/fastify')
 const { BullMQAdapter } = require('@bull-board/api/bullMQAdapter')
 const config = require('../config')
+const tracker = require('./providers/call_tracker')
+const { getStore } = require('./db/delivery')
 const pino = require('pino')
 
 const logger = pino({
@@ -74,7 +76,8 @@ async function buildServer() {
     }
 
     return {
-      status: 'ok',
+      status: Object.values(stats).every(q => q?.worker?.ready) ? 'ok':'degraded',
+      delivery: getStore().health(),
       timestamp: new Date().toISOString(),
       queues: stats,
     }
@@ -84,6 +87,8 @@ async function buildServer() {
   const close = async () => {
     logger.info('Shutting down...')
     await closeQueues()
+    tracker.stop()
+    await tracker.drain()
     await fastify.close()
     process.exit(0)
   }
@@ -102,6 +107,7 @@ async function start() {
 
   // Start worker
   await startWorker()
+  tracker.start()
 
   // Build and start server
   const server = await buildServer()
